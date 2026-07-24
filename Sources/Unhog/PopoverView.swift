@@ -5,6 +5,7 @@ struct PopoverView: View {
     @ObservedObject var store: AppStore
     @ObservedObject var storageStore: StorageStore
     @ObservedObject var usageStore: UsageStore
+    @ObservedObject var updateController: UpdateController
     @State private var selectedSection: PopoverSection =
         ProcessInfo.processInfo.environment[
             "UNHOG_UI_PREVIEW_STATE"
@@ -16,6 +17,28 @@ struct PopoverView: View {
             PopoverSectionPicker(selection: $selectedSection)
                 .padding(.horizontal, UnhogTheme.pagePadding)
                 .padding(.bottom, 10)
+
+            if let update = UpdateBannerPresentation.make(
+                for: updateController.state
+            ) {
+                UpdateBanner(
+                    presentation: update,
+                    onPrimaryAction: { kind in
+                        switch kind {
+                        case .download:
+                            Task { await updateController.downloadUpdate() }
+                        case .openInstaller:
+                            updateController.openDownloadedUpdate()
+                        }
+                    },
+                    onReleaseNotes: {
+                        updateController.openReleasePage()
+                    }
+                )
+                .padding(.horizontal, UnhogTheme.pagePadding)
+                .padding(.bottom, 10)
+                .transition(.opacity)
+            }
 
             // Pinned above the scrolling content: a machine running out of
             // memory is worth seeing whichever section happens to be open.

@@ -7,6 +7,7 @@ enum PreviewSupport {
     static var store: AppStore?
     static var storageStore: StorageStore?
     static var usageStore: UsageStore?
+    static var updateController: UpdateController?
     private static var window: NSWindow?
 
     static func applyFixtureIfRequested(to store: AppStore) {
@@ -87,6 +88,39 @@ enum PreviewSupport {
                 )
             )
 
+        case "update":
+            store.applyPreviewFixture(
+                groups: [cursor, spotify],
+                incidents: []
+            )
+            updateController?.applyPreviewState(
+                .updateAvailable(
+                    ReleaseUpdate(
+                        version: AppVersion(major: 0, minor: 1, patch: 5),
+                        title: "Unhog 0.1.5",
+                        releaseNotes: "Reports whole-machine memory pressure.",
+                        pageURL: URL(
+                            string:
+                                "https://github.com/flazouh/unhog/releases/tag/v0.1.5"
+                        )!,
+                        downloadURL: URL(
+                            string: "https://example.com/Unhog-0.1.5.dmg"
+                        )!
+                    )
+                )
+            )
+
+        case "update-ready":
+            store.applyPreviewFixture(
+                groups: [cursor, spotify],
+                incidents: []
+            )
+            updateController?.applyPreviewState(
+                .readyToInstall(
+                    URL(fileURLWithPath: "/Users/example/Downloads/Unhog-0.1.5.dmg")
+                )
+            )
+
         case "pressure":
             // The machine is exhausted but no single workload is to blame, so
             // the banner carries the whole explanation.
@@ -143,14 +177,16 @@ enum PreviewSupport {
         guard window == nil,
             let store,
             let storageStore,
-            let usageStore
+            let usageStore,
+            let updateController
         else { return }
 
         let controller = NSHostingController(
             rootView: PopoverView(
                 store: store,
                 storageStore: storageStore,
-                usageStore: usageStore
+                usageStore: usageStore,
+                updateController: updateController
             )
         )
         let contentSize = NSSize(
