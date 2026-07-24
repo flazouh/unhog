@@ -87,6 +87,25 @@ enum PreviewSupport {
                 )
             )
 
+        case "pressure":
+            // The machine is exhausted but no single workload is to blame, so
+            // the banner carries the whole explanation.
+            store.applyPreviewFixture(
+                groups: [cursor, spotify],
+                incidents: [],
+                systemPressure: SystemPressure(
+                    level: .critical,
+                    swapUsedBytes: 10_670_309_376,
+                    compressedBytes: 5_927_723_008,
+                    freeBytes: 179_044_352,
+                    pageOutsPerSecond: 21,
+                    beganAt: Date().addingTimeInterval(-184),
+                    duration: 184,
+                    summary: "Your Mac is out of memory and swapping constantly.",
+                    detail: "9,94 GB swap, 5,52 GB compressed, 21 page-outs per second."
+                )
+            )
+
         case "partial":
             let remaining = ProcessGroup(
                 id: original.id,
