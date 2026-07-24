@@ -92,6 +92,9 @@ private struct UsageProviderCard: View {
                         )
                     }
                 }
+                if case .unavailable = snapshot.connectionState {
+                    connectionNotice
+                }
             }
 
             Divider()

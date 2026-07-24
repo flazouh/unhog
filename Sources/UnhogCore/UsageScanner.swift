@@ -99,9 +99,9 @@ public struct UsageScanner: Sendable {
 
     private func scanCodex(now: Date) async -> ProviderUsageSnapshot {
         let home = codexHome
-        let local = await Task.detached(priority: .utility) {
-            LocalUsageLogScanner.scanCodex(home: home, now: now)
-        }.value
+        // Runs on the cooperative pool via the `async let` child task, which
+        // (unlike a detached task) inherits cancellation.
+        let local = LocalUsageLogScanner.scanCodex(home: home, now: now)
 
         guard
             let auth = CodexUsageCredential.load(
@@ -142,24 +142,19 @@ public struct UsageScanner: Sendable {
                 provider: .codex,
                 local: local,
                 now: now,
-                state: .localOnly(error.localizedDescription)
+                state: .unavailable(error.localizedDescription)
             )
         }
     }
 
     private func scanClaude(now: Date) async -> ProviderUsageSnapshot {
         let home = claudeHome
-        let readsKeychain = readsKeychain
-        let local = await Task.detached(priority: .utility) {
-            LocalUsageLogScanner.scanClaude(home: home, now: now)
-        }.value
+        let local = LocalUsageLogScanner.scanClaude(home: home, now: now)
 
-        let credential = await Task.detached(priority: .utility) {
-            ClaudeUsageCredential.load(
-                from: home,
-                allowKeychain: readsKeychain
-            )
-        }.value
+        let credential = ClaudeUsageCredential.load(
+            from: home,
+            allowKeychain: readsKeychain
+        )
         guard let credential else {
             return snapshot(
                 provider: .claude,
@@ -199,7 +194,7 @@ public struct UsageScanner: Sendable {
                 provider: .claude,
                 local: local,
                 now: now,
-                state: .localOnly(error.localizedDescription)
+                state: .unavailable(error.localizedDescription)
             )
         }
     }
@@ -549,10 +544,79 @@ private struct LocalUsagePeriods: Sendable {
     var lastThirtyDays = LocalUsageTotals()
 }
 
+/// Folds events into period totals as they are parsed. Retaining every parsed
+/// event and then filtering it three times made peak memory scale with the size
+/// of the log corpus, which is what exhausted RAM on a large history.
+private struct LocalUsageAccumulator {
+    private let todayStart: Date
+    private let weekStart: Date
+    private let monthStart: Date
+    private var today = RunningTotals()
+    private var week = RunningTotals()
+    private var month = RunningTotals()
+    private var seen: Set<UInt64> = []
+
+    init(now: Date) {
+        let calendar = Calendar.current
+        let start = calendar.startOfDay(for: now)
+        todayStart = start
+        weekStart =
+            calendar.date(byAdding: .day, value: -6, to: start) ?? start
+        monthStart =
+            calendar.date(byAdding: .day, value: -29, to: start) ?? start
+    }
+
+    var periods: LocalUsagePeriods {
+        LocalUsagePeriods(
+            today: today.totals,
+            lastSevenDays: week.totals,
+            lastThirtyDays: month.totals
+        )
+    }
+
+    /// `identity` runs only for events inside a reported window, so older lines
+    /// cost no hashing and never enlarge the dedup set. The set stores digests
+    /// rather than key strings to keep the per-event cost at eight bytes.
+    mutating func add(
+        _ event: UsageEvent,
+        identity: (inout Hasher) -> Void
+    ) {
+        guard event.date >= monthStart else { return }
+
+        var hasher = Hasher()
+        identity(&hasher)
+        let digest = UInt64(bitPattern: Int64(hasher.finalize()))
+        guard seen.insert(digest).inserted else { return }
+
+        month.add(event)
+        if event.date >= weekStart { week.add(event) }
+        if event.date >= todayStart { today.add(event) }
+    }
+
+    private struct RunningTotals {
+        private var inputTokens: UInt64 = 0
+        private var outputTokens: UInt64 = 0
+        private var turnCount = 0
+
+        var totals: LocalUsageTotals {
+            LocalUsageTotals(
+                inputTokens: inputTokens,
+                outputTokens: outputTokens,
+                turnCount: turnCount
+            )
+        }
+
+        mutating func add(_ event: UsageEvent) {
+            inputTokens &+= event.input
+            outputTokens &+= event.output
+            turnCount += 1
+        }
+    }
+}
+
 private enum LocalUsageLogScanner {
     static func scanCodex(home: URL, now: Date) -> LocalUsagePeriods {
-        var events: [UsageEvent] = []
-        var seen: Set<String> = []
+        var accumulator = LocalUsageAccumulator(now: now)
         for directory in [
             home.appending(path: "sessions"),
             home.appending(path: "archived_sessions"),
@@ -570,21 +634,18 @@ private enum LocalUsageLogScanner {
                 else {
                     return
                 }
-                let key = [
-                    event.date.timeIntervalSince1970.description,
-                    event.input.description,
-                    event.output.description,
-                ].joined(separator: ":")
-                guard seen.insert(key).inserted else { return }
-                events.append(event)
+                accumulator.add(event) { hasher in
+                    hasher.combine(event.date)
+                    hasher.combine(event.input)
+                    hasher.combine(event.output)
+                }
             }
         }
-        return periods(events, now: now)
+        return accumulator.periods
     }
 
     static func scanClaude(home: URL, now: Date) -> LocalUsagePeriods {
-        var events: [UsageEvent] = []
-        var seen: Set<String> = []
+        var accumulator = LocalUsageAccumulator(now: now)
         enumerateJSONL(
             in: home.appending(path: "projects"),
             since: cutoff(now)
@@ -599,40 +660,17 @@ private enum LocalUsageLogScanner {
             else {
                 return
             }
-            let key =
-                (message["id"] as? String)
-                ?? [
-                    event.date.timeIntervalSince1970.description,
-                    event.input.description,
-                    event.output.description,
-                ].joined(separator: ":")
-            guard seen.insert(key).inserted else { return }
-            events.append(event)
+            accumulator.add(event) { hasher in
+                if let id = message["id"] as? String {
+                    hasher.combine(id)
+                } else {
+                    hasher.combine(event.date)
+                    hasher.combine(event.input)
+                    hasher.combine(event.output)
+                }
+            }
         }
-        return periods(events, now: now)
-    }
-
-    private static func periods(
-        _ events: [UsageEvent],
-        now: Date
-    ) -> LocalUsagePeriods {
-        let calendar = Calendar.current
-        let today = calendar.startOfDay(for: now)
-        let week = calendar.date(byAdding: .day, value: -6, to: today)!
-        let month = calendar.date(byAdding: .day, value: -29, to: today)!
-        return LocalUsagePeriods(
-            today: totals(events.filter { $0.date >= today }),
-            lastSevenDays: totals(events.filter { $0.date >= week }),
-            lastThirtyDays: totals(events.filter { $0.date >= month })
-        )
-    }
-
-    private static func totals(_ events: [UsageEvent]) -> LocalUsageTotals {
-        LocalUsageTotals(
-            inputTokens: events.reduce(0) { $0 + $1.input },
-            outputTokens: events.reduce(0) { $0 + $1.output },
-            turnCount: events.count
-        )
+        return accumulator.periods
     }
 
     private static func usageEvent(
@@ -672,6 +710,7 @@ private enum LocalUsageLogScanner {
             return
         }
         while let url = enumerator.nextObject() as? URL {
+            if Task.isCancelled { return }
             guard url.pathExtension == "jsonl",
                 let values = try? url.resourceValues(forKeys: keys),
                 values.isRegularFile == true,
@@ -696,6 +735,9 @@ private enum LocalUsageLogScanner {
         while let chunk = try? handle.read(upToCount: 256 * 1_024),
             !chunk.isEmpty
         {
+            // The sweep runs for minutes over a large history, so it has to be
+            // interruptible between chunks rather than only between files.
+            if Task.isCancelled { return }
             buffer.append(chunk)
             while let newline = buffer.firstIndex(of: 0x0A) {
                 parseLine(Data(buffer[..<newline]), visit: visit)

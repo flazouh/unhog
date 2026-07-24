@@ -10,6 +10,7 @@ final class UsageStore: ObservableObject {
     private let scanner: UsageScanner
     private var refreshTask: Task<Void, Never>?
     private var observerCount = 0
+    private var refreshGeneration = 0
 
     init(scanner: UsageScanner = UsageScanner()) {
         self.scanner = scanner
@@ -19,34 +20,76 @@ final class UsageStore: ObservableObject {
         observerCount += 1
         guard refreshTask == nil else { return }
         isRefreshing = snapshots.isEmpty
+        refreshGeneration += 1
+        let generation = refreshGeneration
         let scanner = scanner
         refreshTask = Task { [weak self] in
+            // Whatever ends this loop, the flag has to clear. Otherwise the view
+            // stays on its loading state and the refresh button stays disabled.
+            defer {
+                if let self, self.refreshGeneration == generation {
+                    self.isRefreshing = false
+                    self.refreshTask = nil
+                }
+            }
             while !Task.isCancelled {
                 let snapshots = await scanner.scan()
                 guard !Task.isCancelled else { return }
-                self?.snapshots = snapshots
+                self?.apply(snapshots)
                 self?.isRefreshing = false
-                try? await Task.sleep(for: .seconds(60))
+                // Poll only while something is actually observing.
+                guard let self, self.observerCount > 0 else { return }
+                try? await Task.sleep(for: .seconds(5 * 60))
             }
         }
     }
 
+    // Deliberately does not cancel an in-flight scan. The sweep is expensive and
+    // its result is cached for the next open, so tearing it down on every tab
+    // switch meant it could never finish. The loop exits after the current pass.
     func stopRefreshing() {
         observerCount = max(0, observerCount - 1)
-        guard observerCount == 0 else { return }
-        refreshTask?.cancel()
-        refreshTask = nil
     }
 
     func refresh() {
         guard !isRefreshing else { return }
         isRefreshing = true
+        refreshGeneration += 1
+        let generation = refreshGeneration
         let scanner = scanner
         Task { [weak self] in
+            defer {
+                if let self, self.refreshGeneration == generation {
+                    self.isRefreshing = false
+                }
+            }
             let snapshots = await scanner.scan()
-            guard let self else { return }
-            self.snapshots = snapshots
-            self.isRefreshing = false
+            self?.apply(snapshots)
+        }
+    }
+
+    private func apply(_ incoming: [ProviderUsageSnapshot]) {
+        let previous = Dictionary(
+            uniqueKeysWithValues: snapshots.map { ($0.provider, $0) }
+        )
+        snapshots = incoming.map { fresh in
+            guard case .unavailable = fresh.connectionState,
+                let lastGood = previous[fresh.provider],
+                !lastGood.windows.isEmpty
+            else {
+                return fresh
+            }
+            return ProviderUsageSnapshot(
+                provider: fresh.provider,
+                plan: lastGood.plan,
+                windows: lastGood.windows,
+                creditBalance: lastGood.creditBalance,
+                today: fresh.today,
+                lastSevenDays: fresh.lastSevenDays,
+                lastThirtyDays: fresh.lastThirtyDays,
+                refreshedAt: fresh.refreshedAt,
+                connectionState: fresh.connectionState
+            )
         }
     }
 

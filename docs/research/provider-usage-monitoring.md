@@ -34,9 +34,14 @@ The relevant provider behavior is:
 - Codex local usage: aggregate token counts from JSONL files under
   `~/.codex/sessions/` and `archived_sessions/`.
 
-No OpenUsage app, CLI, Homebrew formula, or cask was detected on this Mac
-during the investigation, so Unhog cannot depend on OpenUsage's optional local
-HTTP API. The implementation is native and self-contained instead.
+OpenUsage 0.7.4 is installed directly at `/Applications/OpenUsage.app` on this
+Mac (it is not Homebrew-managed). It is a signed, unsandboxed native Swift
+menu-bar app with bundle ID `com.robinebers.openusage`. Its loopback API is
+available at `http://127.0.0.1:6736/v1/usage`.
+
+Unhog does not depend on that API: other Unhog users may not have OpenUsage
+installed, and a browser-accessible loopback service adds a separate privacy
+boundary. The implementation is native and self-contained instead.
 
 ## Unhog implementation choices
 
@@ -47,9 +52,10 @@ HTTP API. The implementation is native and self-contained instead.
   never retained in the model or passed to the UI.
 - Provider requests go directly to Anthropic or OpenAI. Local token history
   stays on the Mac.
-- Authentication failures degrade to local-only totals instead of blanking the
-  provider.
-- The scanner refreshes once per minute while the Usage section is visible,
-  with an explicit manual refresh control.
+- Missing authentication degrades to local-only totals. A temporary provider
+  failure preserves the last successful live limits and marks them stale.
+- The scanner refreshes every five minutes while the Usage section is visible,
+  with an explicit manual refresh control. This matches OpenUsage and avoids
+  unnecessarily rate-limiting Anthropic's usage endpoint.
 
 See `THIRD_PARTY_NOTICES.md` for the OpenUsage license notice.
