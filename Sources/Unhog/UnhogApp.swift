@@ -45,9 +45,15 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             ProcessInfo.processInfo.environment["UNHOG_UI_PREVIEW"] == "1"
         store = AppStore(actionsEnabled: !showsPreviewWindow)
         storageStore = StorageStore()
-        usageStore = UsageStore()
+        usageStore = UsageStore(
+            keychainAccess: store.preferences.general.claudeKeychainAccess
+        )
         updateController = UpdateController()
         super.init()
+
+        usageStore.persistKeychainAccess = { [weak store] access in
+            store?.setClaudeKeychainAccess(access)
+        }
 
         if showsPreviewWindow {
             PreviewSupport.store = store

@@ -12,6 +12,16 @@ public enum MotionPreference: String, Codable, CaseIterable, Sendable {
     case reduced
 }
 
+/// Whether Unhog may read the OAuth token that Claude Code keeps in the login
+/// keychain. That item belongs to Claude Code, so macOS asks the user to approve
+/// every read by a different app. Unhog therefore explains itself first, asks
+/// once, and remembers a refusal instead of prompting on every refresh.
+public enum ClaudeKeychainAccess: String, Codable, CaseIterable, Sendable {
+    case unasked
+    case allowed
+    case declined
+}
+
 public enum AlertSensitivity: String, Codable, CaseIterable, Sendable {
     case quiet
     case balanced
@@ -59,17 +69,52 @@ public struct GeneralPreferences: Codable, Equatable, Sendable {
     public var menuBarDisplay: MenuBarDisplayMode
     public var motion: MotionPreference
     public var automaticallyCheckForUpdates: Bool
+    public var claudeKeychainAccess: ClaudeKeychainAccess
 
     public init(
         startsAtLogin: Bool = false,
         menuBarDisplay: MenuBarDisplayMode = .adaptive,
         motion: MotionPreference = .followSystem,
-        automaticallyCheckForUpdates: Bool = true
+        automaticallyCheckForUpdates: Bool = true,
+        claudeKeychainAccess: ClaudeKeychainAccess = .unasked
     ) {
         self.startsAtLogin = startsAtLogin
         self.menuBarDisplay = menuBarDisplay
         self.motion = motion
         self.automaticallyCheckForUpdates = automaticallyCheckForUpdates
+        self.claudeKeychainAccess = claudeKeychainAccess
+    }
+
+    public init(from decoder: any Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        let fallback = GeneralPreferences()
+        startsAtLogin =
+            container.lenient(Bool.self, .startsAtLogin)
+            ?? fallback.startsAtLogin
+        menuBarDisplay =
+            container.lenient(MenuBarDisplayMode.self, .menuBarDisplay)
+            ?? fallback.menuBarDisplay
+        motion =
+            container.lenient(MotionPreference.self, .motion)
+            ?? fallback.motion
+        automaticallyCheckForUpdates =
+            container.lenient(Bool.self, .automaticallyCheckForUpdates)
+            ?? fallback.automaticallyCheckForUpdates
+        claudeKeychainAccess =
+            container.lenient(
+                ClaudeKeychainAccess.self,
+                .claudeKeychainAccess
+            ) ?? fallback.claudeKeychainAccess
+    }
+}
+
+/// Preferences are stored as one JSON blob and read back with `try?`, so a single
+/// unreadable key would discard every setting the user has chosen. Reading each
+/// key independently means a file written by an older or newer version keeps
+/// whatever it does contain and only the unknown parts fall back to defaults.
+extension KeyedDecodingContainer {
+    func lenient<T: Decodable>(_ type: T.Type, _ key: Key) -> T? {
+        try? decodeIfPresent(type, forKey: key)
     }
 }
 
@@ -109,6 +154,42 @@ public struct MonitoringPreferences: Codable, Equatable, Sendable {
         self.customMemoryShare = customMemoryShare
         self.customSustainedDuration = customSustainedDuration
     }
+
+    public init(from decoder: any Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        let fallback = MonitoringPreferences()
+        sensitivity =
+            container.lenient(AlertSensitivity.self, .sensitivity)
+            ?? fallback.sensitivity
+        samplingProfile =
+            container.lenient(SamplingProfile.self, .samplingProfile)
+            ?? fallback.samplingProfile
+        watchesCPU =
+            container.lenient(Bool.self, .watchesCPU) ?? fallback.watchesCPU
+        watchesMemory =
+            container.lenient(Bool.self, .watchesMemory)
+            ?? fallback.watchesMemory
+        alertScope =
+            container.lenient(AlertScope.self, .alertScope)
+            ?? fallback.alertScope
+        mutedWorkloads =
+            container.lenient([MutedWorkload].self, .mutedWorkloads)
+            ?? fallback.mutedWorkloads
+        recoveryVerificationDuration =
+            container.lenient(
+                TimeInterval.self,
+                .recoveryVerificationDuration
+            ) ?? fallback.recoveryVerificationDuration
+        customCPUThresholdCores =
+            container.lenient(Double.self, .customCPUThresholdCores)
+            ?? fallback.customCPUThresholdCores
+        customMemoryShare =
+            container.lenient(Double.self, .customMemoryShare)
+            ?? fallback.customMemoryShare
+        customSustainedDuration =
+            container.lenient(TimeInterval.self, .customSustainedDuration)
+            ?? fallback.customSustainedDuration
+    }
 }
 
 public struct NotificationPreferences: Codable, Equatable, Sendable {
@@ -134,6 +215,27 @@ public struct NotificationPreferences: Codable, Equatable, Sendable {
         self.playsSound = playsSound
         self.showsWorkloadNames = showsWorkloadNames
     }
+
+    public init(from decoder: any Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        let fallback = NotificationPreferences()
+        isEnabled =
+            container.lenient(Bool.self, .isEnabled) ?? fallback.isEnabled
+        level =
+            container.lenient(NotificationLevel.self, .level)
+            ?? fallback.level
+        notifiesOnRestart =
+            container.lenient(Bool.self, .notifiesOnRestart)
+            ?? fallback.notifiesOnRestart
+        notifiesOnRecovery =
+            container.lenient(Bool.self, .notifiesOnRecovery)
+            ?? fallback.notifiesOnRecovery
+        playsSound =
+            container.lenient(Bool.self, .playsSound) ?? fallback.playsSound
+        showsWorkloadNames =
+            container.lenient(Bool.self, .showsWorkloadNames)
+            ?? fallback.showsWorkloadNames
+    }
 }
 
 public struct SafetyPreferences: Codable, Equatable, Sendable {
@@ -146,6 +248,17 @@ public struct SafetyPreferences: Codable, Equatable, Sendable {
     ) {
         self.confirmsWholeStackStop = confirmsWholeStackStop
         self.showsProjectNames = showsProjectNames
+    }
+
+    public init(from decoder: any Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        let fallback = SafetyPreferences()
+        confirmsWholeStackStop =
+            container.lenient(Bool.self, .confirmsWholeStackStop)
+            ?? fallback.confirmsWholeStackStop
+        showsProjectNames =
+            container.lenient(Bool.self, .showsProjectNames)
+            ?? fallback.showsProjectNames
     }
 }
 
@@ -165,6 +278,22 @@ public struct UnhogPreferences: Codable, Equatable, Sendable {
         self.monitoring = monitoring
         self.notifications = notifications
         self.safety = safety
+    }
+
+    public init(from decoder: any Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        general =
+            container.lenient(GeneralPreferences.self, .general)
+            ?? GeneralPreferences()
+        monitoring =
+            container.lenient(MonitoringPreferences.self, .monitoring)
+            ?? MonitoringPreferences()
+        notifications =
+            container.lenient(NotificationPreferences.self, .notifications)
+            ?? NotificationPreferences()
+        safety =
+            container.lenient(SafetyPreferences.self, .safety)
+            ?? SafetyPreferences()
     }
 
     public static let recommended = UnhogPreferences()

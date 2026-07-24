@@ -584,6 +584,12 @@ final class AppStore: ObservableObject {
         }
     }
 
+    func setClaudeKeychainAccess(_ access: ClaudeKeychainAccess) {
+        updatePreferences {
+            $0.general.claudeKeychainAccess = access
+        }
+    }
+
     func copyDiagnostics() {
         let policy = currentPolicies.monitoring
         let text = """

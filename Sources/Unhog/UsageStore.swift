@@ -7,13 +7,34 @@ final class UsageStore: ObservableObject {
     @Published private(set) var snapshots: [ProviderUsageSnapshot] = []
     @Published private(set) var isRefreshing = false
 
-    private let scanner: UsageScanner
+    private var scanner: UsageScanner
     private var refreshTask: Task<Void, Never>?
     private var observerCount = 0
     private var refreshGeneration = 0
+    private var keychainAccess: ClaudeKeychainAccess
+    private let makeScanner: (ClaudeKeychainAccess) -> UsageScanner
 
-    init(scanner: UsageScanner = UsageScanner()) {
-        self.scanner = scanner
+    /// Set by the composition root so a consent decision outlives the process.
+    var persistKeychainAccess: ((ClaudeKeychainAccess) -> Void)?
+
+    init(
+        keychainAccess: ClaudeKeychainAccess = .unasked,
+        makeScanner: @escaping (ClaudeKeychainAccess) -> UsageScanner = {
+            UsageScanner(claudeKeychainAccess: $0)
+        }
+    ) {
+        self.keychainAccess = keychainAccess
+        self.makeScanner = makeScanner
+        scanner = makeScanner(keychainAccess)
+    }
+
+    func allowClaudeKeychainAccess() {
+        // Deliberately re-runs even when already allowed, so the "Ask again"
+        // action after a refusal actually retries.
+        keychainAccess = .allowed
+        scanner = makeScanner(.allowed)
+        persistKeychainAccess?(.allowed)
+        scanOnce()
     }
 
     func startRefreshing() {
@@ -53,6 +74,10 @@ final class UsageStore: ObservableObject {
 
     func refresh() {
         guard !isRefreshing else { return }
+        scanOnce()
+    }
+
+    private func scanOnce() {
         isRefreshing = true
         refreshGeneration += 1
         let generation = refreshGeneration
@@ -69,6 +94,7 @@ final class UsageStore: ObservableObject {
     }
 
     private func apply(_ incoming: [ProviderUsageSnapshot]) {
+        rememberRefusal(in: incoming)
         let previous = Dictionary(
             uniqueKeysWithValues: snapshots.map { ($0.provider, $0) }
         )
@@ -91,6 +117,20 @@ final class UsageStore: ObservableObject {
                 connectionState: fresh.connectionState
             )
         }
+    }
+
+    /// A refused keychain dialog is recorded so the next refresh reads no
+    /// keychain at all. Without this the five-minute poll would keep asking.
+    private func rememberRefusal(in incoming: [ProviderUsageSnapshot]) {
+        guard keychainAccess == .allowed else { return }
+        let refused = incoming.contains {
+            if case .consentDeclined = $0.connectionState { return true }
+            return false
+        }
+        guard refused else { return }
+        keychainAccess = .declined
+        scanner = makeScanner(.declined)
+        persistKeychainAccess?(.declined)
     }
 
     func applyPreviewFixture() {

@@ -14,7 +14,10 @@ struct UsageView: View {
                 loading
             } else {
                 ForEach(store.snapshots) { snapshot in
-                    UsageProviderCard(snapshot: snapshot)
+                    UsageProviderCard(
+                        snapshot: snapshot,
+                        onAllowKeychain: store.allowClaudeKeychainAccess
+                    )
                 }
             }
         }
@@ -76,13 +79,18 @@ struct UsageView: View {
 
 private struct UsageProviderCard: View {
     let snapshot: ProviderUsageSnapshot
+    let onAllowKeychain: () -> Void
 
     var body: some View {
         VStack(alignment: .leading, spacing: 11) {
             providerHeader
 
             if snapshot.windows.isEmpty {
-                connectionNotice
+                if needsKeychainDecision {
+                    consentPanel
+                } else {
+                    connectionNotice
+                }
             } else {
                 VStack(spacing: 9) {
                     ForEach(snapshot.windows) { window in
@@ -151,6 +159,49 @@ private struct UsageProviderCard: View {
         }
     }
 
+    private var needsKeychainDecision: Bool {
+        switch snapshot.connectionState {
+        case .needsConsent, .consentDeclined:
+            true
+        default:
+            false
+        }
+    }
+
+    /// Explains the keychain prompt before it appears, rather than letting macOS
+    /// ask on Unhog's behalf with no context.
+    private var consentPanel: some View {
+        VStack(alignment: .leading, spacing: 7) {
+            HStack(alignment: .top, spacing: 7) {
+                Image(systemName: "lock.shield")
+                    .font(.system(size: 10, weight: .semibold))
+                    .foregroundStyle(connectionColor)
+                Text(connectionDetail)
+                    .font(.system(size: 9))
+                    .foregroundStyle(.secondary)
+                    .fixedSize(horizontal: false, vertical: true)
+                Spacer(minLength: 0)
+            }
+
+            Button(action: onAllowKeychain) {
+                Text(consentActionLabel)
+                    .font(.system(size: 9, weight: .semibold))
+                    .padding(.horizontal, 9)
+                    .frame(height: 22)
+            }
+            .buttonStyle(InlineActionStyle(compact: true))
+            .accessibilityLabel(consentActionLabel)
+        }
+        .padding(.vertical, 3)
+    }
+
+    private var consentActionLabel: String {
+        if case .consentDeclined = snapshot.connectionState {
+            return "Ask again"
+        }
+        return "Turn on live limits"
+    }
+
     private var connectionNotice: some View {
         HStack(alignment: .top, spacing: 7) {
             Image(systemName: "info.circle")
@@ -214,6 +265,10 @@ private struct UsageProviderCard: View {
             "Not connected"
         case .unavailable:
             "Temporarily unavailable"
+        case .needsConsent:
+            "Live limits need permission"
+        case .consentDeclined:
+            "Live limits declined"
         }
     }
 
@@ -223,7 +278,9 @@ private struct UsageProviderCard: View {
             ""
         case let .localOnly(message),
             let .notConfigured(message),
-            let .unavailable(message):
+            let .unavailable(message),
+            let .needsConsent(message),
+            let .consentDeclined(message):
             message
         }
     }
@@ -232,9 +289,9 @@ private struct UsageProviderCard: View {
         switch snapshot.connectionState {
         case .connected:
             UnhogTheme.healthy
-        case .localOnly:
+        case .localOnly, .needsConsent:
             UnhogTheme.warning
-        case .notConfigured, .unavailable:
+        case .notConfigured, .unavailable, .consentDeclined:
             .secondary
         }
     }

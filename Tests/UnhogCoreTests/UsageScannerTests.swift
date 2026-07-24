@@ -137,11 +137,14 @@ private struct UsageFixture {
             at: root,
             withIntermediateDirectories: true
         )
+        // Permission is granted but the stubbed keychain holds nothing, which is
+        // the "signed out" case without ever reading the real keychain.
         scanner = UsageScanner(
             homeDirectory: root,
             environment: [:],
             http: NoopUsageHTTPClient(),
-            readsKeychain: false
+            claudeKeychainAccess: .allowed,
+            readClaudeKeychain: { .missing }
         )
     }
 

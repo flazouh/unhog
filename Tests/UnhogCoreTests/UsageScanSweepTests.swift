@@ -99,7 +99,7 @@ struct UsageLogFixture {
             homeDirectory: root,
             environment: [:],
             http: OfflineUsageHTTPClient(),
-            readsKeychain: false
+            claudeKeychainAccess: .declined
         )
     }
 

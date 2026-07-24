@@ -62,6 +62,11 @@ public enum UsageConnectionState: Equatable, Sendable {
     case localOnly(String)
     case notConfigured(String)
     case unavailable(String)
+    /// Live limits are available but need the user's permission first, because
+    /// the token lives in a keychain item owned by another app.
+    case needsConsent(String)
+    /// The user refused that permission. Recorded so nothing asks again.
+    case consentDeclined(String)
 }
 
 public struct ProviderUsageSnapshot: Identifiable, Equatable, Sendable {

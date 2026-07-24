@@ -73,22 +73,77 @@ public enum UsageScanError: Error, LocalizedError, Equatable {
     }
 }
 
+/// Holds a keychain-sourced credential for the lifetime of the scanner so that
+/// approving the macOS dialog once is enough. Re-reading on every refresh is what
+/// produced a stream of identical consent prompts.
+actor ClaudeCredentialCache {
+    private var cached: ClaudeUsageCredential?
+
+    func credential(
+        home: URL,
+        access: ClaudeKeychainAccess,
+        readKeychain: () -> ClaudeCredentialLookup
+    ) -> ClaudeCredentialLookup {
+        if let cached {
+            return .found(cached)
+        }
+        let lookup = ClaudeUsageCredential.load(
+            from: home,
+            access: access,
+            readKeychain: readKeychain
+        )
+        if case let .found(credential) = lookup {
+            cached = credential
+        }
+        return lookup
+    }
+
+    /// Called only when the provider rejects the token, so a rotated credential
+    /// is picked up without reintroducing routine prompting.
+    func invalidate() {
+        cached = nil
+    }
+}
+
 public struct UsageScanner: Sendable {
     private let homeDirectory: URL
     private let environment: [String: String]
     private let http: any UsageHTTPClient
-    private let readsKeychain: Bool
+    private let claudeKeychainAccess: ClaudeKeychainAccess
+    private let claudeCredentials: ClaudeCredentialCache
+    private let readClaudeKeychain: @Sendable () -> ClaudeCredentialLookup
 
     public init(
         homeDirectory: URL = FileManager.default.homeDirectoryForCurrentUser,
         environment: [String: String] = ProcessInfo.processInfo.environment,
         http: any UsageHTTPClient = SystemUsageHTTPClient(),
-        readsKeychain: Bool = true
+        claudeKeychainAccess: ClaudeKeychainAccess = .unasked
+    ) {
+        self.init(
+            homeDirectory: homeDirectory,
+            environment: environment,
+            http: http,
+            claudeKeychainAccess: claudeKeychainAccess,
+            readClaudeKeychain: { ClaudeUsageCredential.loadKeychain() }
+        )
+    }
+
+    /// The keychain read is injectable so tests can cover consent behaviour
+    /// without touching the real keychain, which would block on a dialog nobody
+    /// can answer on a build machine.
+    init(
+        homeDirectory: URL = FileManager.default.homeDirectoryForCurrentUser,
+        environment: [String: String] = ProcessInfo.processInfo.environment,
+        http: any UsageHTTPClient = SystemUsageHTTPClient(),
+        claudeKeychainAccess: ClaudeKeychainAccess = .unasked,
+        readClaudeKeychain: @escaping @Sendable () -> ClaudeCredentialLookup
     ) {
         self.homeDirectory = homeDirectory
         self.environment = environment
         self.http = http
-        self.readsKeychain = readsKeychain
+        self.claudeKeychainAccess = claudeKeychainAccess
+        self.readClaudeKeychain = readClaudeKeychain
+        claudeCredentials = ClaudeCredentialCache()
     }
 
     public func scan(now: Date = Date()) async -> [ProviderUsageSnapshot] {
@@ -151,11 +206,33 @@ public struct UsageScanner: Sendable {
         let home = claudeHome
         let local = LocalUsageLogScanner.scanClaude(home: home, now: now)
 
-        let credential = ClaudeUsageCredential.load(
-            from: home,
-            allowKeychain: readsKeychain
-        )
-        guard let credential else {
+        let credential: ClaudeUsageCredential
+        switch await claudeCredentials.credential(
+            home: home,
+            access: claudeKeychainAccess,
+            readKeychain: readClaudeKeychain
+        ) {
+        case let .found(found):
+            credential = found
+        case .needsConsent:
+            return snapshot(
+                provider: .claude,
+                local: local,
+                now: now,
+                state: local.lastThirtyDays.hasData
+                    ? .needsConsent(Self.claudeConsentExplanation)
+                    : .notConfigured("Run `claude` and sign in to begin tracking.")
+            )
+        case .declined:
+            return snapshot(
+                provider: .claude,
+                local: local,
+                now: now,
+                state: .consentDeclined(
+                    "Live limits are off. Local token counts still work."
+                )
+            )
+        case .missing:
             return snapshot(
                 provider: .claude,
                 local: local,
@@ -190,6 +267,11 @@ public struct UsageScanner: Sendable {
                 state: .connected
             )
         } catch {
+            if case UsageScanError.notAuthenticated = error {
+                // The stored token no longer works, so drop it and let the next
+                // refresh read a rotated one.
+                await claudeCredentials.invalidate()
+            }
             return snapshot(
                 provider: .claude,
                 local: local,
@@ -198,6 +280,11 @@ public struct UsageScanner: Sendable {
             )
         }
     }
+
+    private static let claudeConsentExplanation = """
+        Claude Code keeps your login token in the macOS keychain. Unhog needs \
+        your permission to read it, so macOS will show one keychain prompt.
+        """
 
     private var codexHome: URL {
         if let path = environment["CODEX_HOME"], !path.isEmpty {
@@ -492,20 +579,53 @@ private struct CodexUsageCredential: Decodable {
     }
 }
 
-private struct ClaudeUsageCredential: Sendable {
+enum ClaudeCredentialLookup: Sendable {
+    case found(ClaudeUsageCredential)
+    /// A keychain read was never attempted because the user has not been asked.
+    case needsConsent
+    /// A keychain read was attempted and the user refused it.
+    case declined
+    case missing
+}
+
+struct ClaudeUsageCredential: Sendable {
     let accessToken: String
     let subscriptionType: String?
 
-    static func load(from home: URL, allowKeychain: Bool) -> Self? {
-        if allowKeychain, let keychain = loadKeychain() {
-            return keychain
+    static func load(
+        from home: URL,
+        access: ClaudeKeychainAccess,
+        readKeychain: () -> ClaudeCredentialLookup
+    ) -> ClaudeCredentialLookup {
+        if access == .allowed {
+            switch readKeychain() {
+            case let .found(credential):
+                return .found(credential)
+            case .declined:
+                return .declined
+            case .missing, .needsConsent:
+                break
+            }
         }
+
+        // The plain file is only used by Claude Code on systems without a
+        // keychain, but reading it costs nothing and never prompts.
         let url = home.appending(path: ".credentials.json")
-        guard let data = try? Data(contentsOf: url) else { return nil }
-        return parse(data)
+        if let data = try? Data(contentsOf: url), let parsed = parse(data) {
+            return .found(parsed)
+        }
+
+        switch access {
+        case .unasked:
+            return .needsConsent
+        case .declined:
+            return .declined
+        case .allowed:
+            return .missing
+        }
     }
 
-    private static func loadKeychain() -> Self? {
+    static func loadKeychain() -> ClaudeCredentialLookup {
         let query: [String: Any] = [
             kSecClass as String: kSecClassGenericPassword,
             kSecAttrService as String: "Claude Code-credentials",
@@ -513,12 +633,21 @@ private struct ClaudeUsageCredential: Sendable {
             kSecReturnData as String: true,
         ]
         var result: CFTypeRef?
-        guard SecItemCopyMatching(query as CFDictionary, &result) == errSecSuccess,
-            let data = result as? Data
-        else {
-            return nil
+        let status = SecItemCopyMatching(query as CFDictionary, &result)
+
+        // Refusing the dialog is reported as a cancelled or failed
+        // authorization. Anything else means the item simply is not readable,
+        // which is not a decision worth remembering.
+        if status == errSecUserCanceled || status == errSecAuthFailed {
+            return .declined
         }
-        return parse(data)
+        guard status == errSecSuccess,
+            let data = result as? Data,
+            let parsed = parse(data)
+        else {
+            return .missing
+        }
+        return .found(parsed)
     }
 
     private static func parse(_ data: Data) -> Self? {

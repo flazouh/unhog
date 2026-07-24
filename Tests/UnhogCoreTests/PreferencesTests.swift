@@ -87,6 +87,63 @@ struct PreferencesTests {
         #expect(policy.pressureSamplingInterval == 1)
     }
 
+    /// Preferences are persisted as JSON and decoded with `try?`, so a key added
+    /// in a later version must not make the whole blob undecodable. If it does,
+    /// upgrading silently throws away every setting the user chose.
+    @Test("Settings saved by an older version survive an upgrade")
+    func toleratesPreferencesWrittenBeforeNewKeysExisted() throws {
+        let suiteName = "UnhogPreferencesTests-\(UUID().uuidString)"
+        let defaults = try #require(UserDefaults(suiteName: suiteName))
+        defer { defaults.removePersistentDomain(forName: suiteName) }
+
+        // Exactly what 0.1.1 wrote: no automaticallyCheckForUpdates key.
+        let legacy = """
+            {
+              "general": {
+                "startsAtLogin": true,
+                "menuBarDisplay": "iconOnly",
+                "motion": "followSystem"
+              },
+              "monitoring": {
+                "sensitivity": "quiet",
+                "samplingProfile": "adaptive",
+                "watchesCPU": true,
+                "watchesMemory": true,
+                "alertScope": "always",
+                "mutedWorkloads": [],
+                "recoveryVerificationDuration": 2,
+                "customCPUThresholdCores": 1.5,
+                "customMemoryShare": 0.2,
+                "customSustainedDuration": 20
+              },
+              "notifications": {
+                "isEnabled": true,
+                "level": "all",
+                "notifiesOnRestart": true,
+                "notifiesOnRecovery": true,
+                "playsSound": false,
+                "showsWorkloadNames": true
+              },
+              "safety": {
+                "confirmsWholeStackStop": true,
+                "showsProjectNames": true
+              }
+            }
+            """
+        defaults.set(Data(legacy.utf8), forKey: "preferences")
+
+        let preferences = UserDefaultsPreferencesRepository(
+            defaults: defaults,
+            storageKey: "preferences"
+        ).load()
+
+        #expect(preferences.general.startsAtLogin)
+        #expect(preferences.general.menuBarDisplay == .iconOnly)
+        #expect(preferences.monitoring.sensitivity == .quiet)
+        // Absent keys fall back to their current default.
+        #expect(preferences.general.automaticallyCheckForUpdates)
+    }
+
     @Test("Legacy notification choice migrates into typed preferences")
     func migratesNotificationChoice() throws {
         let suiteName = "UnhogPreferencesTests-\(UUID().uuidString)"
