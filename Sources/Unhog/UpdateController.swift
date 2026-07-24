@@ -14,6 +14,10 @@ final class UpdateController: ObservableObject {
         case failed(String)
         case downloading
         case readyToInstall(URL)
+        /// Kept apart from `failed` so the popover can stay quiet about a
+        /// background check that went nowhere while still reporting a download
+        /// the user asked for and did not get.
+        case downloadFailed(String)
     }
 
     @Published private(set) var state: State = .idle
@@ -25,6 +29,9 @@ final class UpdateController: ObservableObject {
     private let installedVersion: () -> String?
     private let downloadsDirectory: () -> URL?
     private let lastAutomaticCheckKey = "unhog.lastAutomaticUpdateCheck"
+    /// Held separately from `state` so a retry after a failed download does not
+    /// need a second round trip to GitHub to learn what it was downloading.
+    private var pendingUpdate: ReleaseUpdate?
 
     /// The installed version is read through a closure because tests run inside
     /// the test bundle, where `Bundle.main` describes the test runner rather
@@ -52,6 +59,15 @@ final class UpdateController: ObservableObject {
         self.defaults = defaults
         self.installedVersion = installedVersion
         self.downloadsDirectory = downloadsDirectory
+    }
+
+    /// Lets the preview harness show a banner state without a network, in the
+    /// same spirit as `AppStore.applyPreviewFixture`.
+    func applyPreviewState(_ state: State) {
+        if case let .updateAvailable(update) = state {
+            pendingUpdate = update
+        }
+        self.state = state
     }
 
     var currentVersionLabel: String {
@@ -84,9 +100,12 @@ final class UpdateController: ObservableObject {
             return
         }
 
+        // No alert: the popover banner is where an unprompted discovery belongs.
+        // A modal that steals focus from a menu bar utility once a day is worse
+        // than a button that waits to be noticed.
         await checkForUpdates(
             showUpToDateAlert: false,
-            showUpdateAlert: true
+            showUpdateAlert: false
         )
 
         // Only a check that actually reached GitHub spends the daily budget.
@@ -97,7 +116,7 @@ final class UpdateController: ObservableObject {
     }
 
     func downloadUpdate() async {
-        guard case let .updateAvailable(update) = state else { return }
+        guard let update = pendingUpdate else { return }
         state = .downloading
 
         do {
@@ -108,7 +127,7 @@ final class UpdateController: ObservableObject {
             )
             state = .readyToInstall(destination)
         } catch {
-            state = .failed(error.localizedDescription)
+            state = .downloadFailed(error.localizedDescription)
         }
     }
 
@@ -118,7 +137,7 @@ final class UpdateController: ObservableObject {
     }
 
     func openReleasePage() {
-        guard case let .updateAvailable(update) = state else { return }
+        guard let update = pendingUpdate else { return }
         NSWorkspace.shared.open(update.pageURL)
     }
 
@@ -180,6 +199,7 @@ final class UpdateController: ObservableObject {
     ) {
         switch comparison {
         case .upToDate:
+            pendingUpdate = nil
             state = .upToDate
             if showUpToDateAlert {
                 presentAlert(
@@ -188,6 +208,7 @@ final class UpdateController: ObservableObject {
                 )
             }
         case let .updateAvailable(update):
+            pendingUpdate = update
             state = .updateAvailable(update)
             if showUpdateAlert {
                 presentUpdateAlert(update)

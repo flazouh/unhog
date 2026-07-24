@@ -39,6 +39,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     let usageStore: UsageStore
     let updateController: UpdateController
     private var menuBarWidgetController: MenuBarWidgetController?
+    private var updateCheckTask: Task<Void, Never>?
 
     override init() {
         let showsPreviewWindow =
@@ -59,6 +60,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             PreviewSupport.store = store
             PreviewSupport.storageStore = storageStore
             PreviewSupport.usageStore = usageStore
+            PreviewSupport.updateController = updateController
             PreviewSupport.applyFixtureIfRequested(to: store)
         }
         if ProcessInfo.processInfo.environment[
@@ -79,13 +81,22 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             menuBarWidgetController = MenuBarWidgetController(
                 store: store,
                 storageStore: storageStore,
-                usageStore: usageStore
+                usageStore: usageStore,
+                updateController: updateController
             )
-            Task {
-                await updateController.checkForUpdatesIfNeeded(
-                    automaticallyCheck: store.preferences.general
-                        .automaticallyCheckForUpdates
-                )
+            updateCheckTask = Task { [weak self] in
+                // Unhog is left running for weeks, so checking only at launch
+                // meant the banner could never appear during the session that
+                // needed it. The daily budget is enforced inside the check, so
+                // this loop only decides how often to reconsider.
+                while !Task.isCancelled {
+                    guard let self else { return }
+                    await self.updateController.checkForUpdatesIfNeeded(
+                        automaticallyCheck: self.store.preferences.general
+                            .automaticallyCheckForUpdates
+                    )
+                    try? await Task.sleep(for: .seconds(3_600))
+                }
             }
         }
     }

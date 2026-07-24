@@ -118,6 +118,13 @@ struct GeneralSettingsPane: View {
             }
         case let .failed(message):
             SettingDescription(message)
+        case let .downloadFailed(message):
+            SettingDescription(message)
+            Button("Try again") {
+                Task {
+                    await updateController.downloadUpdate()
+                }
+            }
         }
     }
 }

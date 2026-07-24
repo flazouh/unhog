@@ -86,7 +86,7 @@ struct UpdateControllerTests {
 
         await controller.downloadUpdate()
 
-        guard case let .failed(message) = controller.state else {
+        guard case let .downloadFailed(message) = controller.state else {
             Issue.record("Expected the download to fail, got \(controller.state).")
             return
         }
@@ -135,6 +135,62 @@ struct UpdateControllerTests {
         }
         #expect(url.lastPathComponent == "Unhog-0.1.4.dmg")
         #expect(try Data(contentsOf: url) == installer)
+    }
+
+    @Test("Retrying a failed download does not ask GitHub again")
+    @MainActor
+    func retryReusesTheKnownUpdate() async throws {
+        let stub = StubNetwork()
+        let installer = Data("a disk image".utf8)
+        let digest = SHA256.hash(data: installer)
+            .map { String(format: "%02x", $0) }
+            .joined()
+        stub.route(
+            latestReleaseURL,
+            status: 200,
+            body: releaseJSON(tag: "v0.1.4", withChecksum: true)
+        )
+        stub.route(installerURL, status: 200, body: installer)
+        // A truncated transfer the first time round.
+        stub.route(
+            checksumURL,
+            status: 200,
+            body: Data("\(String(repeating: "0", count: 64))  Unhog-0.1.4.dmg\n".utf8)
+        )
+        defer { stub.reset() }
+
+        let folder = try temporaryDirectory()
+        defer { try? FileManager.default.removeItem(at: folder) }
+        let controller = makeController(
+            stub: stub,
+            defaults: try scratchDefaults(),
+            downloads: folder
+        )
+
+        await controller.checkForUpdates(
+            showUpToDateAlert: false,
+            showUpdateAlert: false
+        )
+        await controller.downloadUpdate()
+        guard case .downloadFailed = controller.state else {
+            Issue.record("Expected a failed download, got \(controller.state).")
+            return
+        }
+
+        stub.route(
+            checksumURL,
+            status: 200,
+            body: Data("\(digest)  Unhog-0.1.4.dmg\n".utf8)
+        )
+        await controller.downloadUpdate()
+
+        guard case .readyToInstall = controller.state else {
+            Issue.record("Expected the retry to succeed, got \(controller.state).")
+            return
+        }
+        // The retry button must work off what is already known, not send the
+        // user back through a fresh check to get the button back.
+        #expect(stub.requestCount(for: latestReleaseURL) == 1)
     }
 
     // MARK: - Fixtures

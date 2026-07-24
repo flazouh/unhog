@@ -8,6 +8,7 @@ final class MenuBarWidgetController: NSObject, NSPopoverDelegate {
     private let store: AppStore
     private let storageStore: StorageStore
     private let usageStore: UsageStore
+    private let updateController: UpdateController
     private let dismissalPolicy = MenuBarWidgetDismissalPolicy()
     private let statusItem = NSStatusBar.system.statusItem(
         withLength: NSStatusItem.variableLength
@@ -21,11 +22,13 @@ final class MenuBarWidgetController: NSObject, NSPopoverDelegate {
     init(
         store: AppStore,
         storageStore: StorageStore,
-        usageStore: UsageStore
+        usageStore: UsageStore,
+        updateController: UpdateController
     ) {
         self.store = store
         self.storageStore = storageStore
         self.usageStore = usageStore
+        self.updateController = updateController
         super.init()
         configureStatusItem()
         configurePopover()
@@ -86,7 +89,8 @@ final class MenuBarWidgetController: NSObject, NSPopoverDelegate {
             rootView: MenuBarWidgetRoot(
                 store: store,
                 storageStore: storageStore,
-                usageStore: usageStore
+                usageStore: usageStore,
+                updateController: updateController
             )
         )
     }
@@ -180,12 +184,14 @@ private struct MenuBarWidgetRoot: View {
     @ObservedObject var store: AppStore
     @ObservedObject var storageStore: StorageStore
     @ObservedObject var usageStore: UsageStore
+    @ObservedObject var updateController: UpdateController
 
     var body: some View {
         PopoverView(
             store: store,
             storageStore: storageStore,
-            usageStore: usageStore
+            usageStore: usageStore,
+            updateController: updateController
         )
         .environment(
             \.unhogReduceMotion,
