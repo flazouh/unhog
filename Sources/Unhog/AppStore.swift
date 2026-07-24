@@ -15,6 +15,7 @@ final class AppStore: ObservableObject {
 
     @Published private(set) var groups: [ProcessGroup] = []
     @Published private(set) var incidents: [ResourceIncident] = []
+    @Published private(set) var systemPressure: SystemPressure?
     @Published private(set) var isPreparing = true
     @Published private(set) var stopState: StopState = .idle
     @Published private(set) var recoveryAssessment: RecoveryAssessment?
@@ -41,6 +42,8 @@ final class AppStore: ObservableObject {
     private let currentUID: UInt32
     private let appPID: Int32
     private var detector: ResourcePressureDetector
+    private let systemMemorySampler: any SystemMemorySampling
+    private var systemPressureDetector = SystemPressureDetector()
     private var monitoringTask: Task<Void, Never>?
     private var sampleCount = 0
     private var notifiedIncidentIDs = Set<ProcessGroupID>()
@@ -68,10 +71,12 @@ final class AppStore: ObservableObject {
         appPID: Int32 = getpid(),
         actionsEnabled: Bool = true,
         preferencesRepository: UserDefaultsPreferencesRepository =
-            UserDefaultsPreferencesRepository()
+            UserDefaultsPreferencesRepository(),
+        systemMemorySampler: any SystemMemorySampling = SystemMemorySampler()
     ) {
         let preferences = preferencesRepository.load()
         self.monitor = monitor
+        self.systemMemorySampler = systemMemorySampler
         self.currentUID = currentUID
         self.appPID = appPID
         self.actionsEnabled = actionsEnabled
@@ -223,7 +228,8 @@ final class AppStore: ObservableObject {
         incidents: [ResourceIncident],
         recoveryAssessment: RecoveryAssessment? = nil,
         resolvingGroup: ProcessGroup? = nil,
-        stopState: StopState = .idle
+        stopState: StopState = .idle,
+        systemPressure: SystemPressure? = nil
     ) {
         monitoringTask?.cancel()
         monitoringTask = nil
@@ -238,6 +244,7 @@ final class AppStore: ObservableObject {
         self.recoveryAssessment = recoveryAssessment
         self.resolvingGroup = resolvingGroup
         self.stopState = stopState
+        self.systemPressure = systemPressure
     }
 
     func toggleDetails(for id: ProcessGroupID) {
@@ -611,6 +618,7 @@ final class AppStore: ObservableObject {
                 Date().addingTimeInterval($0)
             } ?? .distantFuture
         incidents = []
+        systemPressure = nil
         notifiedIncidentIDs = []
     }
 
@@ -668,6 +676,11 @@ final class AppStore: ObservableObject {
         let allGroups = grouper.groups(from: userSamples)
         let monitoringPolicy = currentPolicies.monitoring
         let detectedIncidents = detector.evaluate(allGroups)
+        // Whole-machine exhaustion has no owning process, so it is tracked
+        // beside the per-workload incidents rather than among them.
+        if let reading = systemMemorySampler.sample(at: Date()) {
+            systemPressure = systemPressureDetector.evaluate(reading)
+        }
         let alertsAllowed =
             monitoringPolicy.alertScope == .always
             || PowerSource.isUsingBattery
@@ -695,6 +708,7 @@ final class AppStore: ObservableObject {
         )
         pressureIsRising =
             !newIncidents.isEmpty
+            || systemPressure != nil
             || (preferences.monitoring.watchesMemory
                 && memoryIsGrowing)
             || (preferences.monitoring.watchesCPU
@@ -779,6 +793,7 @@ final class AppStore: ObservableObject {
         if let pausedUntil = monitoringPausedUntil {
             if pausedUntil > Date() {
                 incidents = []
+                systemPressure = nil
                 return .seconds(5)
             }
             monitoringPausedUntil = nil

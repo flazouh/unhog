@@ -17,6 +17,18 @@ struct PopoverView: View {
                 .padding(.horizontal, UnhogTheme.pagePadding)
                 .padding(.bottom, 10)
 
+            // Pinned above the scrolling content: a machine running out of
+            // memory is worth seeing whichever section happens to be open.
+            if let pressure = store.systemPressure {
+                SystemPressureBanner(
+                    pressure: pressure,
+                    hasWorkloadIncidents: !store.incidents.isEmpty
+                )
+                .padding(.horizontal, UnhogTheme.pagePadding)
+                .padding(.bottom, 10)
+                .transition(.opacity)
+            }
+
             ScrollView {
                 Group {
                     switch selectedSection {
