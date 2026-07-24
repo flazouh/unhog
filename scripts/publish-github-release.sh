@@ -48,9 +48,12 @@ if [[ "$build_commit" != "$local_head" ]]; then
   exit 1
 fi
 
-remote_head="$(git -C "$UNHOG_ROOT" ls-remote origin refs/heads/main | awk '{print $1}')"
-if [[ "$local_head" != "$remote_head" ]]; then
-  print -u2 "Local HEAD is not the commit currently pushed to origin/main."
+# Containment rather than equality: a tag build legitimately runs after main has
+# moved on, and what matters is that the release commit is published, not that it
+# is still the newest thing on the branch.
+git -C "$UNHOG_ROOT" fetch --quiet origin main
+if ! git -C "$UNHOG_ROOT" merge-base --is-ancestor "$local_head" FETCH_HEAD; then
+  print -u2 "The release commit is not contained in origin/main."
   print -u2 "Push the release commit before publishing."
   exit 1
 fi

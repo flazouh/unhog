@@ -15,7 +15,33 @@ fi
 UNHOG_IDENTITY="${UNHOG_SIGN_IDENTITY:-}"
 UNHOG_EXPECTED_TEAM="${UNHOG_TEAM_ID:-}"
 UNHOG_NOTARY_PROFILE="${UNHOG_NOTARY_PROFILE:-}"
+UNHOG_NOTARY_KEY_ID="${UNHOG_NOTARY_KEY_ID:-}"
+UNHOG_NOTARY_ISSUER_ID="${UNHOG_NOTARY_ISSUER_ID:-}"
+UNHOG_NOTARY_KEY_PATH="${UNHOG_NOTARY_KEY_PATH:-}"
 UNHOG_SHOULD_NOTARIZE=true
+
+# There are two ways to authenticate to Apple's notary service. A developer Mac
+# uses a keychain profile stored once by `notarytool store-credentials`. A hosted
+# CI runner has no such keychain, so it passes App Store Connect API key material
+# through the environment instead.
+notary_auth=()
+notary_method=""
+if [[ -n "$UNHOG_NOTARY_KEY_ID$UNHOG_NOTARY_ISSUER_ID$UNHOG_NOTARY_KEY_PATH" ]]; then
+  if [[ -z "$UNHOG_NOTARY_KEY_ID" || -z "$UNHOG_NOTARY_ISSUER_ID" || -z "$UNHOG_NOTARY_KEY_PATH" ]]; then
+    print -u2 "Incomplete notary API key configuration."
+    print -u2 "Set UNHOG_NOTARY_KEY_ID, UNHOG_NOTARY_ISSUER_ID, and UNHOG_NOTARY_KEY_PATH together."
+    exit 1
+  fi
+  notary_auth=(
+    --key "$UNHOG_NOTARY_KEY_PATH"
+    --key-id "$UNHOG_NOTARY_KEY_ID"
+    --issuer "$UNHOG_NOTARY_ISSUER_ID"
+  )
+  notary_method="API key $UNHOG_NOTARY_KEY_ID"
+elif [[ -n "$UNHOG_NOTARY_PROFILE" ]]; then
+  notary_auth=(--keychain-profile "$UNHOG_NOTARY_PROFILE")
+  notary_method="keychain profile $UNHOG_NOTARY_PROFILE"
+fi
 
 usage() {
   cat <<'EOF'
@@ -40,7 +66,7 @@ while (( $# > 0 )); do
     --print-config)
       print "Signing identity: $UNHOG_IDENTITY"
       print "Expected team: $UNHOG_EXPECTED_TEAM"
-      print "Notary profile: $UNHOG_NOTARY_PROFILE"
+      print "Notary auth: $notary_method"
       exit 0
       ;;
     --help)
@@ -55,10 +81,15 @@ while (( $# > 0 )); do
   esac
 done
 
-if [[ -z "$UNHOG_IDENTITY" || -z "$UNHOG_EXPECTED_TEAM" || -z "$UNHOG_NOTARY_PROFILE" ]]; then
+if [[ -z "$UNHOG_IDENTITY" || -z "$UNHOG_EXPECTED_TEAM" || -z "$notary_method" ]]; then
   print -u2 "Missing signing configuration."
   print -u2 "Copy scripts/release.local.env.example to scripts/release.local.env"
   print -u2 "and set UNHOG_SIGN_IDENTITY, UNHOG_TEAM_ID, and UNHOG_NOTARY_PROFILE."
+  exit 1
+fi
+
+if [[ -n "$UNHOG_NOTARY_KEY_PATH" && ! -f "$UNHOG_NOTARY_KEY_PATH" ]]; then
+  print -u2 "Notary API key not found at $UNHOG_NOTARY_KEY_PATH"
   exit 1
 fi
 
@@ -166,7 +197,7 @@ fi
 
 xcrun notarytool submit \
   "$UNHOG_PENDING_DMG" \
-  --keychain-profile "$UNHOG_NOTARY_PROFILE" \
+  "${notary_auth[@]}" \
   --wait
 
 xcrun stapler staple "$UNHOG_PENDING_DMG"

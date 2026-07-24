@@ -10,9 +10,9 @@ publish_config="$("$UNHOG_PUBLISH_SCRIPT" --print-config)"
 
 identity="$(print -r -- "$config" | sed -n 's/^Signing identity: //p')"
 team="$(print -r -- "$config" | sed -n 's/^Expected team: //p')"
-profile="$(print -r -- "$config" | sed -n 's/^Notary profile: //p')"
+notary="$(print -r -- "$config" | sed -n 's/^Notary auth: //p')"
 
-if [[ -z "$identity" || -z "$team" || -z "$profile" ]]; then
+if [[ -z "$identity" || -z "$team" || -z "$notary" ]]; then
   print -u2 "Release signing configuration is incomplete."
   print -u2 "Create scripts/release.local.env from scripts/release.local.env.example."
   exit 1
