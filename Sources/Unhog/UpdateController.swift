@@ -1,5 +1,6 @@
 import AppKit
 import Combine
+import CryptoKit
 import Foundation
 import UnhogCore
 
@@ -21,18 +22,36 @@ final class UpdateController: ObservableObject {
     private let session: URLSession
     private let checker: ReleaseUpdateChecker
     private let defaults: UserDefaults
+    private let installedVersion: () -> String?
+    private let downloadsDirectory: () -> URL?
     private let lastAutomaticCheckKey = "unhog.lastAutomaticUpdateCheck"
 
+    /// The installed version is read through a closure because tests run inside
+    /// the test bundle, where `Bundle.main` describes the test runner rather
+    /// than the app and every check would fail on a missing version. The
+    /// download folder is injectable for the same reason: tests must never
+    /// write into, or delete from, the real Downloads folder.
     init(
         repository: String = "flazouh/unhog",
         session: URLSession = .shared,
         checker: ReleaseUpdateChecker = ReleaseUpdateChecker(),
-        defaults: UserDefaults = .standard
+        defaults: UserDefaults = .standard,
+        installedVersion: @escaping () -> String? = {
+            Bundle.main.infoDictionary?["CFBundleShortVersionString"] as? String
+        },
+        downloadsDirectory: @escaping () -> URL? = {
+            FileManager.default.urls(
+                for: .downloadsDirectory,
+                in: .userDomainMask
+            ).first
+        }
     ) {
         self.repository = repository
         self.session = session
         self.checker = checker
         self.defaults = defaults
+        self.installedVersion = installedVersion
+        self.downloadsDirectory = downloadsDirectory
     }
 
     var currentVersionLabel: String {
@@ -65,11 +84,16 @@ final class UpdateController: ObservableObject {
             return
         }
 
-        defaults.set(Date(), forKey: lastAutomaticCheckKey)
         await checkForUpdates(
             showUpToDateAlert: false,
             showUpdateAlert: true
         )
+
+        // Only a check that actually reached GitHub spends the daily budget.
+        // Recording it up front turned one offline moment into a full day of
+        // silence, because the retry was gated behind the same timestamp.
+        if case .failed = state { return }
+        defaults.set(Date(), forKey: lastAutomaticCheckKey)
     }
 
     func downloadUpdate() async {
@@ -79,6 +103,7 @@ final class UpdateController: ObservableObject {
         do {
             let destination = try await downloadAsset(
                 from: update.downloadURL,
+                checksumURL: update.checksumURL,
                 suggestedName: "Unhog-\(update.version.displayString).dmg"
             )
             state = .readyToInstall(destination)
@@ -98,13 +123,7 @@ final class UpdateController: ObservableObject {
     }
 
     private var currentVersion: AppVersion? {
-        guard
-            let rawVersion = Bundle.main.infoDictionary?[
-                "CFBundleShortVersionString"
-            ] as? String
-        else {
-            return nil
-        }
+        guard let rawVersion = installedVersion() else { return nil }
         return AppVersion(parsing: rawVersion)
     }
 
@@ -178,6 +197,7 @@ final class UpdateController: ObservableObject {
 
     private func downloadAsset(
         from url: URL,
+        checksumURL: URL?,
         suggestedName: String
     ) async throws -> URL {
         let (temporaryURL, response) = try await session.download(from: url)
@@ -187,10 +207,13 @@ final class UpdateController: ObservableObject {
             throw ReleaseUpdateError.invalidResponse
         }
 
-        let downloads = FileManager.default.urls(
-            for: .downloadsDirectory,
-            in: .userDomainMask
-        ).first!
+        if let checksumURL {
+            try await verify(fileAt: temporaryURL, against: checksumURL)
+        }
+
+        guard let downloads = downloadsDirectory() else {
+            throw ReleaseUpdateError.downloadsDirectoryUnavailable
+        }
         let destination = downloads.appending(path: suggestedName)
 
         if FileManager.default.fileExists(atPath: destination.path) {
@@ -199,6 +222,35 @@ final class UpdateController: ObservableObject {
 
         try FileManager.default.moveItem(at: temporaryURL, to: destination)
         return destination
+    }
+
+    private func verify(fileAt url: URL, against checksumURL: URL) async throws {
+        let (data, response) = try await session.data(from: checksumURL)
+        guard let httpResponse = response as? HTTPURLResponse,
+            (200..<300).contains(httpResponse.statusCode),
+            let text = String(data: data, encoding: .utf8),
+            let expected = ReleaseChecksum.parseSHA256(text)
+        else {
+            throw ReleaseUpdateError.invalidResponse
+        }
+
+        guard try sha256Hex(ofFileAt: url) == expected else {
+            throw ReleaseUpdateError.checksumMismatch
+        }
+    }
+
+    private func sha256Hex(ofFileAt url: URL) throws -> String {
+        let handle = try FileHandle(forReadingFrom: url)
+        defer { try? handle.close() }
+
+        // Read in chunks so a large disk image never sits in memory whole.
+        var hasher = SHA256()
+        while let chunk = try handle.read(upToCount: 1 << 20), !chunk.isEmpty {
+            hasher.update(data: chunk)
+        }
+        return hasher.finalize()
+            .map { String(format: "%02x", $0) }
+            .joined()
     }
 
     private func presentUpdateAlert(_ update: ReleaseUpdate) {

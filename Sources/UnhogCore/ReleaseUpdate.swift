@@ -6,19 +6,37 @@ public struct ReleaseUpdate: Sendable, Equatable {
     public let releaseNotes: String
     public let pageURL: URL
     public let downloadURL: URL
+    public let checksumURL: URL?
 
     public init(
         version: AppVersion,
         title: String,
         releaseNotes: String,
         pageURL: URL,
-        downloadURL: URL
+        downloadURL: URL,
+        checksumURL: URL? = nil
     ) {
         self.version = version
         self.title = title
         self.releaseNotes = releaseNotes
         self.pageURL = pageURL
         self.downloadURL = downloadURL
+        self.checksumURL = checksumURL
+    }
+}
+
+public enum ReleaseChecksum {
+    /// `shasum -a 256` writes "<digest>  <file name>", so the digest is the first
+    /// field. Anything that is not a 64-character hex string is refused rather
+    /// than compared, so a truncated or error-page body cannot pass as a match.
+    public static func parseSHA256(_ text: String) -> String? {
+        guard let field = text.split(whereSeparator: \.isWhitespace).first,
+            field.count == 64,
+            field.allSatisfy(\.isHexDigit)
+        else {
+            return nil
+        }
+        return field.lowercased()
     }
 }
 
@@ -100,6 +118,8 @@ public enum ReleaseUpdateError: Error, Equatable, Sendable, LocalizedError {
     case invalidResponse
     case missingDownloadAsset
     case invalidVersion
+    case checksumMismatch
+    case downloadsDirectoryUnavailable
 
     public var errorDescription: String? {
         switch self {
@@ -109,6 +129,11 @@ public enum ReleaseUpdateError: Error, Equatable, Sendable, LocalizedError {
             "The latest release does not include a downloadable installer."
         case .invalidVersion:
             "Could not determine the installed app version."
+        case .checksumMismatch:
+            "The downloaded update did not match the checksum published with "
+                + "the release, so it was discarded."
+        case .downloadsDirectoryUnavailable:
+            "Could not find the Downloads folder to save the update into."
         }
     }
 }
@@ -124,7 +149,7 @@ public struct ReleaseUpdateChecker: Sendable {
             throw ReleaseUpdateError.invalidVersion
         }
 
-        guard let downloadURL = preferredDownloadURL(in: release.assets) else {
+        guard let installer = preferredInstaller(in: release.assets) else {
             throw ReleaseUpdateError.missingDownloadAsset
         }
 
@@ -138,15 +163,24 @@ public struct ReleaseUpdateChecker: Sendable {
                 title: release.title,
                 releaseNotes: release.body,
                 pageURL: release.pageURL,
-                downloadURL: downloadURL
+                downloadURL: installer.downloadURL,
+                checksumURL: checksumURL(for: installer, in: release.assets)
             )
         )
     }
 
-    private func preferredDownloadURL(
+    private func preferredInstaller(
+        in assets: [GitHubReleaseAsset]
+    ) -> GitHubReleaseAsset? {
+        assets.first { $0.name.hasSuffix(".dmg") } ?? assets.first
+    }
+
+    /// The release pipeline publishes "<installer>.sha256" beside the disk image.
+    /// Releases made before that existed simply have no checksum to check.
+    private func checksumURL(
+        for installer: GitHubReleaseAsset,
         in assets: [GitHubReleaseAsset]
     ) -> URL? {
-        assets.first { $0.name.hasSuffix(".dmg") }?.downloadURL
-            ?? assets.first?.downloadURL
+        assets.first { $0.name == installer.name + ".sha256" }?.downloadURL
     }
 }
