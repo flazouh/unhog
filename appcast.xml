@@ -3,15 +3,15 @@
     <channel>
         <title>Unhog</title>
         <item>
-            <title>0.1.6</title>
-            <pubDate>Sat, 25 Jul 2026 00:21:47 +0000</pubDate>
+            <title>0.1.7</title>
+            <pubDate>Sat, 25 Jul 2026 00:40:55 +0000</pubDate>
             <link>https://github.com/flazouh/unhog</link>
             <sparkle:fullReleaseNotesLink>https://github.com/flazouh/unhog/releases</sparkle:fullReleaseNotesLink>
-            <sparkle:version>7</sparkle:version>
-            <sparkle:shortVersionString>0.1.6</sparkle:shortVersionString>
+            <sparkle:version>8</sparkle:version>
+            <sparkle:shortVersionString>0.1.7</sparkle:shortVersionString>
             <sparkle:minimumSystemVersion>14.0</sparkle:minimumSystemVersion>
             <sparkle:hardwareRequirements>arm64</sparkle:hardwareRequirements>
-            <enclosure url="https://github.com/flazouh/unhog/releases/download/v0.1.6/Unhog-0.1.6.dmg" length="2517516" type="application/octet-stream" sparkle:edSignature="l/5EsCyscxv1c3vcducEnlf2hqqKE34c5rPUS4o6/kpXTu8GuJuSA6IvO+Vzr7ZeqYdlXLFIgvP67KtRbmXBCQ=="/>
+            <enclosure url="https://github.com/flazouh/unhog/releases/download/v0.1.7/Unhog-0.1.7.dmg" length="2515014" type="application/octet-stream" sparkle:edSignature="tgS8ulwOvLLDI12tfFDCC+82TF+Z8vSIei45OaL/00Taut51diatFaxv6EQjY0495G83KyqttQ+ZPgFYnb2pCQ=="/>
         </item>
     </channel>
 </rss>
