@@ -33,10 +33,30 @@ struct UpdateBannerPresentation: Equatable {
         for state: UpdateController.State
     ) -> UpdateBannerPresentation? {
         switch state {
-        case .idle, .checking, .upToDate, .unavailable:
-            // Nothing to act on, and a menu bar app has no business reporting a
-            // check that found the version the user already has.
+        case .idle, .unavailable:
             return nil
+
+        case .checking:
+            return UpdateBannerPresentation(
+                title: "Checking for updates…",
+                detail: nil,
+                primary: nil,
+                progress: .indeterminate,
+                showsReleaseNotes: false,
+                isWarning: false
+            )
+
+        case .upToDate:
+            // Only reached when the user asked. A background check that finds
+            // nothing sets `.idle` instead, so the popover stays quiet.
+            return UpdateBannerPresentation(
+                title: "Unhog is up to date",
+                detail: nil,
+                primary: nil,
+                progress: nil,
+                showsReleaseNotes: false,
+                isWarning: false
+            )
 
         case let .available(version):
             return UpdateBannerPresentation(

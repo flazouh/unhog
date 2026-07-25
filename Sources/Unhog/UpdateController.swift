@@ -41,6 +41,11 @@ final class UpdateController: ObservableObject, SparkleUpdatePresenter {
     private var pendingChoice: ((SPUUserUpdateChoice) -> Void)?
     private var pendingVersion: String?
     private var automaticChecks = true
+    /// A background check that finds nothing must leave no trace, but a check the
+    /// user asked for has to say something or the button looks broken.
+    private var announcesResult = false
+    private var launchCheckTask: Task<Void, Never>?
+    private var dismissTask: Task<Void, Never>?
 
     init(repository: String = "flazouh/unhog") {
         self.repository = repository
@@ -80,6 +85,7 @@ final class UpdateController: ObservableObject, SparkleUpdatePresenter {
             try updater.start()
             self.driver = driver
             self.updater = updater
+            scheduleLaunchCheck()
         } catch {
             // An unsigned build from .build/debug cannot verify anything, so
             // reporting that plainly beats an error the user cannot act on.
@@ -95,6 +101,23 @@ final class UpdateController: ObservableObject, SparkleUpdatePresenter {
         updater?.automaticallyChecksForUpdates = enabled
     }
 
+    /// Sparkle's scheduler waits out the whole interval before its first look, so
+    /// an app installed today would not hear about anything until tomorrow. This
+    /// asks once, quietly, shortly after launch: if there is nothing new the
+    /// popover stays exactly as it was.
+    private func scheduleLaunchCheck() {
+        guard automaticChecks else { return }
+        launchCheckTask = Task { [weak self] in
+            try? await Task.sleep(for: .seconds(10))
+            guard !Task.isCancelled, let self, let updater = self.updater else {
+                return
+            }
+            guard !updater.sessionInProgress else { return }
+            self.announcesResult = false
+            updater.checkForUpdatesInBackground()
+        }
+    }
+
     // MARK: - Actions
 
     func checkForUpdates() {
@@ -102,6 +125,8 @@ final class UpdateController: ObservableObject, SparkleUpdatePresenter {
             state = .unavailable
             return
         }
+        announcesResult = true
+        dismissTask?.cancel()
         guard !updater.sessionInProgress else {
             updater.checkForUpdates()
             return
@@ -164,7 +189,22 @@ final class UpdateController: ObservableObject, SparkleUpdatePresenter {
     func updateNotFound() {
         pendingChoice = nil
         pendingVersion = nil
+        guard announcesResult else {
+            state = .idle
+            return
+        }
+        announcesResult = false
         state = .upToDate
+        // Said once and then gone: a permanent "you are up to date" is clutter in
+        // a popover the user opened to look at something else.
+        dismissTask?.cancel()
+        dismissTask = Task { [weak self] in
+            try? await Task.sleep(for: .seconds(4))
+            guard !Task.isCancelled, let self, self.state == .upToDate else {
+                return
+            }
+            self.state = .idle
+        }
     }
 
     func updateFailed(_ message: String) {

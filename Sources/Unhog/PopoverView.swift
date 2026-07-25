@@ -192,6 +192,13 @@ struct PopoverView: View {
             Divider()
                 .padding(.vertical, 2)
 
+            FluidDropdownAction(
+                "Check for updates",
+                systemImage: "arrow.down.circle"
+            ) {
+                updateController.checkForUpdates()
+            }
+
             FluidDropdownSettingsLink()
 
             FluidDropdownAction(
