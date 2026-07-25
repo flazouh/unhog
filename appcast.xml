@@ -1,0 +1,9 @@
+<?xml version="1.0" encoding="utf-8"?>
+<rss version="2.0" xmlns:sparkle="http://www.andymatuschak.org/xml-namespaces/sparkle">
+    <channel>
+        <title>Unhog</title>
+        <link>https://flazouh.github.io/unhog/appcast.xml</link>
+        <description>Update feed for Unhog.</description>
+        <language>en</language>
+    </channel>
+</rss>
