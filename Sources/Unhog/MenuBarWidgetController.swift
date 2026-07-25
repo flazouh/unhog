@@ -18,6 +18,7 @@ final class MenuBarWidgetController: NSObject, NSPopoverDelegate {
     private var storeObservation: AnyCancellable?
     private var applicationDeactivationObserver: NSObjectProtocol?
     private var escapeMonitor: Any?
+    private var outsideClickMonitor: Any?
 
     init(
         store: AppStore,
@@ -123,6 +124,32 @@ final class MenuBarWidgetController: NSObject, NSPopoverDelegate {
     private func installEventMonitors() {
         removeEventMonitors()
 
+        // Deactivation alone cannot carry this. Showing the popover does not
+        // reliably make an accessory app active — measured as false on one run
+        // and true on the next — and when it does not, the app the user came
+        // from is still frontmost. Clicking back into that same app hands over
+        // no activation for the notification below to report, so the popover
+        // stays on screen. Reproduced by driving the real binary: clicking
+        // inside the frontmost app's own window left it open every time.
+        //
+        // A global monitor sees mouse events delivered to other applications,
+        // which is exactly the click being missed. Events inside this app,
+        // including the status item and the popover itself, are not global and
+        // so do not reach it.
+        outsideClickMonitor = NSEvent.addGlobalMonitorForEvents(
+            matching: [.leftMouseDown, .rightMouseDown, .otherMouseDown]
+        ) { [weak self] _ in
+            Task { @MainActor [weak self] in
+                guard let self,
+                    self.popover.isShown,
+                    self.dismissalPolicy.shouldDismiss(for: .outsideApplication)
+                else {
+                    return
+                }
+                self.closePopover()
+            }
+        }
+
         applicationDeactivationObserver = NotificationCenter.default
             .addObserver(
                 forName: NSApplication.didResignActiveNotification,
@@ -170,6 +197,10 @@ final class MenuBarWidgetController: NSObject, NSPopoverDelegate {
         if let escapeMonitor {
             NSEvent.removeMonitor(escapeMonitor)
             self.escapeMonitor = nil
+        }
+        if let outsideClickMonitor {
+            NSEvent.removeMonitor(outsideClickMonitor)
+            self.outsideClickMonitor = nil
         }
     }
 
