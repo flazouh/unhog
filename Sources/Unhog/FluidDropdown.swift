@@ -50,7 +50,7 @@ struct FluidDropdown<Label: View, Content: View>: View {
 
     var body: some View {
         Button {
-            setPresented(!isPresented)
+            isPresented.toggle()
         } label: {
             HStack(spacing: 5) {
                 label
@@ -97,48 +97,22 @@ struct FluidDropdown<Label: View, Content: View>: View {
             reduceMotion ? nil : UnhogTheme.motionEnter,
             value: isPresented
         )
-        // An overlay rather than `.popover`: a separate macOS popover window
-        // brings its own arrow and placement, which cannot read as a panel
-        // attached to the control that opened it. Added after the trigger's own
-        // animations so those stay scoped to the button.
-        .overlay(alignment: .topTrailing) {
-            if isPresented {
-                FluidDropdownPanel(width: width) {
-                    content
-                }
-                .environment(
-                    \.dismissFluidDropdown,
-                    FluidDropdownDismissAction {
-                        setPresented(false)
-                    }
-                )
-                .offset(y: 32)
-                .transition(panelTransition)
-                .zIndex(100)
+        .popover(
+            isPresented: $isPresented,
+            arrowEdge: .bottom
+        ) {
+            FluidDropdownPanel(width: width) {
+                content
             }
+            .environment(
+                \.dismissFluidDropdown,
+                FluidDropdownDismissAction {
+                    isPresented = false
+                }
+            )
+            .presentationBackground(.clear)
         }
         .accessibilityValue(isPresented ? "Expanded" : "Collapsed")
-    }
-
-    /// The single place `isPresented` changes, so opening, choosing an action,
-    /// and Escape all animate the same way instead of one of them cutting.
-    private func setPresented(_ presented: Bool) {
-        withAnimation(
-            reduceMotion
-                ? UnhogTheme.motionFade
-                : .spring(response: 0.24, dampingFraction: 0.90)
-        ) {
-            isPresented = presented
-        }
-    }
-
-    private var panelTransition: AnyTransition {
-        guard !reduceMotion else { return .opacity }
-        // Grows from the corner it hangs off, so the panel reads as coming out
-        // of the trigger rather than fading in over it.
-        return .scale(scale: 0.96, anchor: .topTrailing)
-            .combined(with: .offset(y: -4))
-            .combined(with: .opacity)
     }
 }
 
@@ -306,7 +280,9 @@ private struct FluidDropdownPanel<Content: View>: View {
     let width: CGFloat
     @ViewBuilder let content: Content
 
+    @Environment(\.unhogReduceMotion) private var reduceMotion
     @Environment(\.dismissFluidDropdown) private var dismiss
+    @State private var appeared = false
     @FocusState private var receivesKeyboardFocus: Bool
 
     init(
@@ -343,9 +319,11 @@ private struct FluidDropdownPanel<Content: View>: View {
             x: 0,
             y: 8
         )
-        // Entrance and exit belong to the transition applied where the panel is
-        // inserted; owning a second copy of that state here is what let the
-        // visual state drift from the presentation state.
+        .scaleEffect(
+            reduceMotion || appeared ? 1 : 0.96,
+            anchor: .topTrailing
+        )
+        .opacity(reduceMotion || appeared ? 1 : 0)
         .focusSection()
         .focusable()
         .focused($receivesKeyboardFocus)
@@ -364,6 +342,19 @@ private struct FluidDropdownPanel<Content: View>: View {
         }
         .onAppear {
             receivesKeyboardFocus = true
+
+            if reduceMotion {
+                appeared = true
+            } else {
+                withAnimation(
+                    .spring(
+                        response: 0.24,
+                        dampingFraction: 0.90
+                    )
+                ) {
+                    appeared = true
+                }
+            }
         }
     }
 }

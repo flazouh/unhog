@@ -124,6 +124,39 @@ struct UsageScannerTests {
                 == .localOnly("Sign in with Claude Code to add live limits.")
         )
     }
+
+    /// Both agents stamp their logs to the millisecond. Every fixture above uses
+    /// whole seconds, which is the only reason this scan ever appeared to work:
+    /// on a real machine every event was discarded at the timestamp and the tab
+    /// reported zero while reading gigabytes to do it.
+    @Test("Timestamps with milliseconds still count")
+    func parsesFractionalSecondTimestamps() async throws {
+        let fixture = try UsageFixture()
+        defer { fixture.remove() }
+        let now = try #require(
+            ISO8601DateFormatter().date(from: "2026-07-24T12:00:00Z")
+        )
+
+        try fixture.writeCodex(
+            """
+            {"timestamp":"2026-07-24T10:00:00.123Z","type":"event_msg","payload":{"type":"token_count","info":{"last_token_usage":{"input_tokens":1200,"cached_input_tokens":300,"output_tokens":80}}}}
+            """
+        )
+        try fixture.writeClaude(
+            """
+            {"timestamp":"2026-07-24T09:00:00.265Z","type":"assistant","message":{"id":"msg-1","usage":{"input_tokens":900,"cache_read_input_tokens":100,"output_tokens":50}}}
+            """
+        )
+
+        let snapshots = await fixture.scanner.scan(now: now)
+        let codex = try #require(snapshots.first { $0.provider == .codex })
+        let claude = try #require(snapshots.first { $0.provider == .claude })
+
+        #expect(codex.today.inputTokens == 1_500)
+        #expect(codex.today.outputTokens == 80)
+        #expect(claude.today.inputTokens == 1_000)
+        #expect(claude.today.outputTokens == 50)
+    }
 }
 
 private struct UsageFixture {

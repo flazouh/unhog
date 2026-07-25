@@ -525,7 +525,7 @@ enum UsagePayloadParser {
             return Date(timeIntervalSince1970: normalized)
         }
         guard let value = value as? String else { return nil }
-        return ISO8601DateFormatter().date(from: value)
+        return ISO8601Timestamp.date(from: value)
     }
 
     private static func planName(_ value: String?) -> String? {
@@ -750,7 +750,11 @@ private enum LocalUsageLogScanner {
             home.appending(path: "sessions"),
             home.appending(path: "archived_sessions"),
         ] {
-            enumerateJSONL(in: directory, since: cutoff(now)) { object in
+            enumerateJSONL(
+                in: directory,
+                since: cutoff(now),
+                matching: Array("token_count".utf8)
+            ) { object in
                 guard object["type"] as? String == "event_msg",
                     let payload = object["payload"] as? [String: Any],
                     payload["type"] as? String == "token_count",
@@ -777,7 +781,11 @@ private enum LocalUsageLogScanner {
         var accumulator = LocalUsageAccumulator(now: now)
         enumerateJSONL(
             in: home.appending(path: "projects"),
-            since: cutoff(now)
+            since: cutoff(now),
+            // Every line this scan wants carries a "usage" object; the marker is
+            // the same key the guard below reads, so nothing is filtered out that
+            // would otherwise have counted.
+            matching: Array("\"usage\"".utf8)
         ) { object in
             guard object["type"] as? String == "assistant",
                 let message = object["message"] as? [String: Any],
@@ -820,9 +828,17 @@ private enum LocalUsageLogScanner {
         return UsageEvent(date: date, input: input, output: output)
     }
 
+    /// `marker` is a byte sequence every line of interest must contain.
+    ///
+    /// Agent transcripts are mostly prose, tool output, and inlined images: this
+    /// machine holds 3.2 GB of them describing 197,000 usage events, so fewer than
+    /// one line in a hundred carries a number worth reading. Testing for the key
+    /// before handing the line to JSONSerialization avoids building a dictionary
+    /// tree for the rest, which is where nearly all of the memory went.
     private static func enumerateJSONL(
         in root: URL,
         since cutoff: Date,
+        matching marker: [UInt8],
         visit: @escaping ([String: Any]) -> Void
     ) {
         let keys: Set<URLResourceKey> = [
@@ -847,12 +863,21 @@ private enum LocalUsageLogScanner {
             else {
                 continue
             }
-            enumerateLines(in: url, visit: visit)
+            enumerateLines(in: url, matching: marker, visit: visit)
         }
     }
 
+    /// Reads with two buffers that live for the whole file and are reused.
+    ///
+    /// Reading through `FileHandle` hands back a freshly allocated `Data` per
+    /// chunk, so sweeping three gigabytes allocated and released three gigabytes
+    /// of them. Almost none of it stays live, but the allocator keeps the pages,
+    /// and the process footprint is what the rest of the machine has to live
+    /// with. Reusing one chunk buffer and one line buffer keeps the sweep's
+    /// allocation roughly constant regardless of how much history there is.
     private static func enumerateLines(
         in url: URL,
+        matching marker: [UInt8],
         visit: ([String: Any]) -> Void
     ) {
         guard let handle = try? FileHandle(forReadingFrom: url) else {
@@ -860,22 +885,91 @@ private enum LocalUsageLogScanner {
         }
         defer { try? handle.close() }
 
-        var buffer = Data()
-        while let chunk = try? handle.read(upToCount: 256 * 1_024),
-            !chunk.isEmpty
-        {
-            // The sweep runs for minutes over a large history, so it has to be
+        let descriptor = handle.fileDescriptor
+        let chunkSize = 256 * 1_024
+        var chunk = [UInt8](repeating: 0, count: chunkSize)
+        var line: [UInt8] = []
+        line.reserveCapacity(64 * 1_024)
+
+        while true {
+            // The sweep runs for a while over a large history, so it has to be
             // interruptible between chunks rather than only between files.
             if Task.isCancelled { return }
-            buffer.append(chunk)
-            while let newline = buffer.firstIndex(of: 0x0A) {
-                parseLine(Data(buffer[..<newline]), visit: visit)
-                buffer.removeSubrange(...newline)
+
+            let count = chunk.withUnsafeMutableBytes {
+                read(descriptor, $0.baseAddress, chunkSize)
+            }
+            guard count > 0 else { break }
+
+            // Foundation's JSON reader hands back autoreleased objects, and a
+            // sweep of thousands of files never reaches a drain point on its own.
+            autoreleasepool {
+                chunk.withUnsafeBytes { raw in
+                    guard let base = raw.baseAddress else { return }
+                    var start = 0
+                    while start < count,
+                        let hit = memchr(base + start, 0x0A, count - start)
+                    {
+                        let newline = UnsafeRawPointer(hit) - base
+                        let region = UnsafeRawBufferPointer(
+                            start: base + start,
+                            count: newline - start
+                        )
+                        // Most lines arrive whole inside one read, and those are
+                        // examined where they lie: only a line split across two
+                        // reads has to be assembled in the carry-over buffer.
+                        if line.isEmpty {
+                            if contains(marker, in: region) {
+                                parseLine(Data(region), visit: visit)
+                            }
+                        } else {
+                            line.append(contentsOf: region)
+                            consume(&line, matching: marker, visit: visit)
+                        }
+                        start = newline + 1
+                    }
+                    if start < count {
+                        line.append(
+                            contentsOf: UnsafeRawBufferPointer(
+                                start: base + start,
+                                count: count - start
+                            )
+                        )
+                    }
+                }
             }
         }
-        if !buffer.isEmpty {
-            parseLine(buffer, visit: visit)
+
+        if !line.isEmpty {
+            autoreleasepool {
+                consume(&line, matching: marker, visit: visit)
+            }
         }
+    }
+
+    private static func contains(
+        _ marker: [UInt8],
+        in region: UnsafeRawBufferPointer
+    ) -> Bool {
+        guard let base = region.baseAddress, region.count >= marker.count else {
+            return false
+        }
+        return marker.withUnsafeBytes { needle in
+            guard let start = needle.baseAddress else { return false }
+            return memmem(base, region.count, start, needle.count) != nil
+        }
+    }
+
+    /// Empties `line` while keeping its capacity, so the next line reuses it.
+    private static func consume(
+        _ line: inout [UInt8],
+        matching marker: [UInt8],
+        visit: ([String: Any]) -> Void
+    ) {
+        defer { line.removeAll(keepingCapacity: true) }
+        let matched = line.withUnsafeBytes { contains(marker, in: $0) }
+        guard matched else { return }
+        parseLine(Data(line), visit: visit)
     }
 
     private static func parseLine(
@@ -912,7 +1006,28 @@ private enum LocalUsageLogScanner {
             return Date(timeIntervalSince1970: number.doubleValue)
         }
         guard let value = value as? String else { return nil }
-        return ISO8601DateFormatter().date(from: value)
+        return ISO8601Timestamp.date(from: value)
+    }
+}
+
+/// Reads the timestamps agents actually write.
+///
+/// Both Claude and Codex stamp to the millisecond, and `ISO8601DateFormatter`
+/// ignores fractional seconds unless asked — but once asked, it then refuses
+/// timestamps that lack them. Neither spelling alone reads every line, so both
+/// are kept. They are also built once: the formatter is expensive to create and
+/// this is called for every usage line in the history.
+private enum ISO8601Timestamp {
+    nonisolated(unsafe) private static let withFractionalSeconds: ISO8601DateFormatter = {
+        let formatter = ISO8601DateFormatter()
+        formatter.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
+        return formatter
+    }()
+
+    nonisolated(unsafe) private static let wholeSeconds = ISO8601DateFormatter()
+
+    static func date(from value: String) -> Date? {
+        withFractionalSeconds.date(from: value) ?? wholeSeconds.date(from: value)
     }
 }
 
