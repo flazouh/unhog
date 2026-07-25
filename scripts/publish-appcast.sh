@@ -69,13 +69,13 @@ feed="$workdir/staging/appcast.xml"
 
 # An unsigned enclosure is the one failure that looks like success: the feed
 # publishes, and then every client rejects the update it advertises.
-if ! rg -q 'sparkle:edSignature="[^"]+"' "$feed"; then
+if ! grep -q 'sparkle:edSignature="[^"]\{1,\}"' "$feed"; then
   print -u2 "Generated feed carries no EdDSA signature. Refusing to publish it."
   print -u2 "Check that Info.plist still has SUPublicEDKey and that the key matches."
   exit 1
 fi
 
-if ! rg -q "releases/download/$tag/Unhog-$version.dmg" "$feed"; then
+if ! grep -qF "releases/download/$tag/Unhog-$version.dmg" "$feed"; then
   print -u2 "Generated feed does not point at $tag. Refusing to publish it."
   exit 1
 fi
