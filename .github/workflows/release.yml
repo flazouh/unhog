@@ -90,6 +90,14 @@ jobs:
           GH_TOKEN: ${{ github.token }}
         run: ./scripts/publish-github-release.sh
 
+      # Runs after the release so the URL the feed advertises already resolves.
+      # A feed published first would point installed copies at a download that
+      # does not exist yet.
+      - name: Publish the Sparkle update feed
+        env:
+          SPARKLE_PRIVATE_KEY: ${{ secrets.SPARKLE_PRIVATE_KEY }}
+        run: ./scripts/publish-appcast.sh
+
       - name: Upload the artifact for inspection
         if: always()
         uses: actions/upload-artifact@v4
