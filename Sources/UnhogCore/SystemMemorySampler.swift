@@ -23,6 +23,9 @@ public struct SystemMemorySampler: SystemMemorySampling, Sendable {
         return SystemMemoryReading(
             installedBytes: ProcessInfo.processInfo.physicalMemory,
             freeBytes: UInt64(statistics.free_count) * pageSize,
+            availableBytes: (UInt64(statistics.free_count)
+                + UInt64(statistics.inactive_count)
+                + UInt64(statistics.purgeable_count)) * pageSize,
             compressedBytes: UInt64(statistics.compressor_page_count) * pageSize,
             swapUsedBytes: swap?.xsu_used ?? 0,
             swapTotalBytes: swap?.xsu_total ?? 0,

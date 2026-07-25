@@ -120,11 +120,24 @@ enum PreviewSupport {
                     swapUsedBytes: 10_670_309_376,
                     compressedBytes: 5_927_723_008,
                     freeBytes: 179_044_352,
-                    pageOutsPerSecond: 21,
+                    // A rate the detector would now actually call critical: the
+                    // fixture used to say 21, which the current thresholds treat
+                    // as an idle machine.
+                    pageOutsPerSecond: 640,
                     beganAt: Date().addingTimeInterval(-184),
                     duration: 184,
                     summary: "Your Mac is out of memory and swapping constantly.",
-                    detail: "9,94 GB swap, 5,52 GB compressed, 21 page-outs per second."
+                    detail: "9,94 GB swap, 5,52 GB compressed, 640 page-outs per second."
+                ),
+                systemMemory: SystemMemoryReading(
+                    installedBytes: 25_769_803_776,
+                    freeBytes: 179_044_352,
+                    availableBytes: 421_527_552,
+                    compressedBytes: 5_927_723_008,
+                    swapUsedBytes: 10_670_309_376,
+                    swapTotalBytes: 11_811_160_064,
+                    cumulativePageOuts: 851_678,
+                    takenAt: Date()
                 )
             )
 

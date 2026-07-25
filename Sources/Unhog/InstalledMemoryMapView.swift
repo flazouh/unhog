@@ -5,6 +5,9 @@ import SwiftUI
 struct InstalledMemoryMapView: View {
     let composition: MemoryComposition
     let focusedGroupID: ProcessGroupID?
+    /// Absent until the first sample lands, and on any Mac where the kernel
+    /// refuses the statistics call.
+    var availableBytes: UInt64?
 
     @Environment(\.unhogReduceMotion) private var reduceMotion
     @State private var revealed = false
@@ -23,9 +26,15 @@ struct InstalledMemoryMapView: View {
 
                 Spacer()
 
-                Text("100% of installed RAM")
-                    .font(.system(size: 9, weight: .medium))
-                    .foregroundStyle(.secondary)
+                // The bar maps the whole of installed RAM, so a percentage of it
+                // could only ever read 100%. Headroom is the number that moves,
+                // and the one worth knowing.
+                if let availableBytes {
+                    Text("\(MetricFormatting.memory(availableBytes)) available")
+                        .font(.system(size: 9, weight: .medium))
+                        .foregroundStyle(.secondary)
+                        .monospacedDigit()
+                }
             }
 
             GeometryReader { proxy in

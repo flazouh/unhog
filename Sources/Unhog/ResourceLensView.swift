@@ -11,7 +11,8 @@ struct ResourceLensView: View {
         VStack(alignment: .leading, spacing: 13) {
             InstalledMemoryMapView(
                 composition: store.memoryComposition,
-                focusedGroupID: store.focusedGroupID
+                focusedGroupID: store.focusedGroupID,
+                availableBytes: store.systemMemory?.availableBytes
             )
 
             content
@@ -83,12 +84,26 @@ struct ResourceLensView: View {
 
     private var calm: some View {
         HStack(alignment: .top, spacing: 9) {
-            Image(systemName: "checkmark.circle")
-                .font(.system(size: 14, weight: .medium))
-                .foregroundStyle(UnhogTheme.healthyForeground)
+            // The per-app rules being quiet is not the same as the machine being
+            // well, and the banner above says so in red. Claiming everything
+            // looks normal directly underneath it reads as a broken app.
+            let machineIsStruggling = store.systemPressure != nil
+            Image(
+                systemName: machineIsStruggling
+                    ? "magnifyingglass" : "checkmark.circle"
+            )
+            .font(.system(size: 14, weight: .medium))
+            .foregroundStyle(
+                machineIsStruggling
+                    ? UnhogTheme.subtleText : UnhogTheme.healthyForeground
+            )
             VStack(alignment: .leading, spacing: 2) {
-                Text("Everything looks normal")
-                    .font(.system(size: 14, weight: .semibold))
+                Text(
+                    machineIsStruggling
+                        ? "No single app is to blame"
+                        : "Everything looks normal"
+                )
+                .font(.system(size: 14, weight: .semibold))
                 Text("No app has sustained unusual CPU or memory use.")
                     .font(.system(size: 11))
                     .foregroundStyle(.secondary)
