@@ -39,8 +39,6 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     let usageStore: UsageStore
     let updateController: UpdateController
     private var menuBarWidgetController: MenuBarWidgetController?
-    private var updateCheckTask: Task<Void, Never>?
-
     override init() {
         let showsPreviewWindow =
             ProcessInfo.processInfo.environment["UNHOG_UI_PREVIEW"] == "1"
@@ -84,20 +82,13 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                 usageStore: usageStore,
                 updateController: updateController
             )
-            updateCheckTask = Task { [weak self] in
-                // Unhog is left running for weeks, so checking only at launch
-                // meant the banner could never appear during the session that
-                // needed it. The daily budget is enforced inside the check, so
-                // this loop only decides how often to reconsider.
-                while !Task.isCancelled {
-                    guard let self else { return }
-                    await self.updateController.checkForUpdatesIfNeeded(
-                        automaticallyCheck: self.store.preferences.general
-                            .automaticallyCheckForUpdates
-                    )
-                    try? await Task.sleep(for: .seconds(3_600))
-                }
-            }
+            // Sparkle keeps its own schedule and its own record of the last
+            // check, so the hourly task that used to live here would only be
+            // second-guessing it.
+            updateController.start(
+                automaticallyCheckForUpdates: store.preferences.general
+                    .automaticallyCheckForUpdates
+            )
         }
     }
 }

@@ -1,303 +1,217 @@
 import AppKit
 import Combine
-import CryptoKit
 import Foundation
-import UnhogCore
+import OSLog
+import Sparkle
 
+/// Owns the updater and translates it into something the popover can show.
+///
+/// Unhog used to fetch the GitHub release list itself, download the disk image,
+/// and then leave the user to mount it and drag the app over the copy that was
+/// running. That last step is the one an app cannot do for itself by hand, which
+/// is why it never got done and why the version never changed. Sparkle exists to
+/// perform exactly that swap, with a signature check and a relaunch, so the
+/// hand-rolled checker is gone rather than kept alongside it.
 @MainActor
-final class UpdateController: ObservableObject {
+final class UpdateController: ObservableObject, SparkleUpdatePresenter {
     enum State: Equatable {
         case idle
         case checking
         case upToDate
-        case updateAvailable(ReleaseUpdate)
+        case available(version: String)
+        /// `nil` when the server did not say how large the download is.
+        case downloading(fraction: Double?)
+        case installing
+        case readyToRelaunch
         case failed(String)
-        case downloading
-        case readyToInstall(URL)
-        /// Kept apart from `failed` so the popover can stay quiet about a
-        /// background check that went nowhere while still reporting a download
-        /// the user asked for and did not get.
-        case downloadFailed(String)
+        /// Set when Sparkle could not start at all, which in practice means the
+        /// app is running from a build directory rather than a signed bundle.
+        case unavailable
     }
 
     @Published private(set) var state: State = .idle
 
     private let repository: String
-    private let session: URLSession
-    private let checker: ReleaseUpdateChecker
-    private let defaults: UserDefaults
-    private let installedVersion: () -> String?
-    private let downloadsDirectory: () -> URL?
-    private let lastAutomaticCheckKey = "unhog.lastAutomaticUpdateCheck"
-    /// Held separately from `state` so a retry after a failed download does not
-    /// need a second round trip to GitHub to learn what it was downloading.
-    private var pendingUpdate: ReleaseUpdate?
+    private let logger = Logger(subsystem: "com.unhog.app", category: "updates")
+    private var updater: SPUUpdater?
+    private var driver: SparkleUserDriver?
 
-    /// The installed version is read through a closure because tests run inside
-    /// the test bundle, where `Bundle.main` describes the test runner rather
-    /// than the app and every check would fail on a missing version. The
-    /// download folder is injectable for the same reason: tests must never
-    /// write into, or delete from, the real Downloads folder.
-    init(
-        repository: String = "flazouh/unhog",
-        session: URLSession = .shared,
-        checker: ReleaseUpdateChecker = ReleaseUpdateChecker(),
-        defaults: UserDefaults = .standard,
-        installedVersion: @escaping () -> String? = {
-            Bundle.main.infoDictionary?["CFBundleShortVersionString"] as? String
-        },
-        downloadsDirectory: @escaping () -> URL? = {
-            FileManager.default.urls(
-                for: .downloadsDirectory,
-                in: .userDomainMask
-            ).first
-        }
-    ) {
+    /// Sparkle hands over a callback and waits for it, so the button in the
+    /// banner has to be able to reach the reply that is currently outstanding.
+    private var pendingChoice: ((SPUUserUpdateChoice) -> Void)?
+    private var pendingVersion: String?
+    private var automaticChecks = true
+
+    init(repository: String = "flazouh/unhog") {
         self.repository = repository
-        self.session = session
-        self.checker = checker
-        self.defaults = defaults
-        self.installedVersion = installedVersion
-        self.downloadsDirectory = downloadsDirectory
-    }
-
-    /// Lets the preview harness show a banner state without a network, in the
-    /// same spirit as `AppStore.applyPreviewFixture`.
-    func applyPreviewState(_ state: State) {
-        if case let .updateAvailable(update) = state {
-            pendingUpdate = update
-        }
-        self.state = state
     }
 
     var currentVersionLabel: String {
-        currentVersion?.displayString ?? "Unknown"
+        let info = Bundle.main.infoDictionary
+        let short = info?["CFBundleShortVersionString"] as? String ?? "unknown"
+        let build = info?["CFBundleVersion"] as? String
+        guard let build else { return "Unhog \(short)" }
+        return "Unhog \(short) (\(build))"
     }
 
-    func checkForUpdates(
-        showUpToDateAlert: Bool = true,
-        showUpdateAlert: Bool = true
-    ) async {
-        state = .checking
+    var canCheckForUpdates: Bool {
+        guard let updater else { return false }
+        return !updater.sessionInProgress
+    }
+
+    // MARK: - Lifecycle
+
+    /// Called once from the composition root, after preferences are known.
+    func start(automaticallyCheckForUpdates: Bool) {
+        automaticChecks = automaticallyCheckForUpdates
+        let driver = SparkleUserDriver(presenter: self)
+        let updater = SPUUpdater(
+            hostBundle: .main,
+            applicationBundle: .main,
+            userDriver: driver,
+            delegate: nil
+        )
+        updater.automaticallyChecksForUpdates = automaticallyCheckForUpdates
+        // Sparkle's own scheduler replaces the hourly task that used to live in
+        // the app delegate, including the "not more than once a day" budget.
+        updater.updateCheckInterval = 86_400
+
         do {
-            let comparison = try await fetchComparison()
-            apply(
-                comparison,
-                showUpToDateAlert: showUpToDateAlert,
-                showUpdateAlert: showUpdateAlert
-            )
+            try updater.start()
+            self.driver = driver
+            self.updater = updater
         } catch {
-            state = .failed(error.localizedDescription)
+            // An unsigned build from .build/debug cannot verify anything, so
+            // reporting that plainly beats an error the user cannot act on.
+            logger.notice(
+                "Updater unavailable: \(error.localizedDescription, privacy: .public)"
+            )
+            state = .unavailable
         }
     }
 
-    func checkForUpdatesIfNeeded(
-        automaticallyCheck: Bool,
-        minimumInterval: TimeInterval = 86_400
-    ) async {
-        guard automaticallyCheck else { return }
-        guard shouldPerformAutomaticCheck(minimumInterval: minimumInterval) else {
+    func setAutomaticChecks(_ enabled: Bool) {
+        automaticChecks = enabled
+        updater?.automaticallyChecksForUpdates = enabled
+    }
+
+    // MARK: - Actions
+
+    func checkForUpdates() {
+        guard let updater else {
+            state = .unavailable
             return
         }
-
-        // No alert: the popover banner is where an unprompted discovery belongs.
-        // A modal that steals focus from a menu bar utility once a day is worse
-        // than a button that waits to be noticed.
-        await checkForUpdates(
-            showUpToDateAlert: false,
-            showUpdateAlert: false
-        )
-
-        // Only a check that actually reached GitHub spends the daily budget.
-        // Recording it up front turned one offline moment into a full day of
-        // silence, because the retry was gated behind the same timestamp.
-        if case .failed = state { return }
-        defaults.set(Date(), forKey: lastAutomaticCheckKey)
-    }
-
-    func downloadUpdate() async {
-        guard let update = pendingUpdate else { return }
-        state = .downloading
-
-        do {
-            let destination = try await downloadAsset(
-                from: update.downloadURL,
-                checksumURL: update.checksumURL,
-                suggestedName: "Unhog-\(update.version.displayString).dmg"
-            )
-            state = .readyToInstall(destination)
-        } catch {
-            state = .downloadFailed(error.localizedDescription)
+        guard !updater.sessionInProgress else {
+            updater.checkForUpdates()
+            return
         }
+        state = .checking
+        updater.checkForUpdates()
     }
 
-    func openDownloadedUpdate() {
-        guard case let .readyToInstall(url) = state else { return }
-        NSWorkspace.shared.open(url)
+    /// Answers whatever question Sparkle is currently waiting on: install the
+    /// update it found, or restart into the one it has already staged.
+    func installUpdate() {
+        guard let choice = pendingChoice else { return }
+        pendingChoice = nil
+        choice(.install)
+    }
+
+    func dismissUpdate() {
+        guard let choice = pendingChoice else {
+            state = .idle
+            return
+        }
+        pendingChoice = nil
+        choice(.dismiss)
     }
 
     func openReleasePage() {
-        guard let update = pendingUpdate else { return }
-        NSWorkspace.shared.open(update.pageURL)
-    }
-
-    private var currentVersion: AppVersion? {
-        guard let rawVersion = installedVersion() else { return nil }
-        return AppVersion(parsing: rawVersion)
-    }
-
-    private func shouldPerformAutomaticCheck(
-        minimumInterval: TimeInterval
-    ) -> Bool {
-        guard
-            let lastCheck = defaults.object(
-                forKey: lastAutomaticCheckKey
-            ) as? Date
-        else {
-            return true
+        let url: URL
+        if let pendingVersion,
+            let tagged = URL(
+                string:
+                    "https://github.com/\(repository)/releases/tag/v\(pendingVersion)"
+            )
+        {
+            url = tagged
+        } else if let latest = URL(
+            string: "https://github.com/\(repository)/releases/latest"
+        ) {
+            url = latest
+        } else {
+            return
         }
-        return Date().timeIntervalSince(lastCheck) >= minimumInterval
+        NSWorkspace.shared.open(url)
     }
 
-    private func fetchComparison() async throws -> ReleaseUpdateComparison {
-        guard let currentVersion else {
-            throw ReleaseUpdateError.invalidVersion
-        }
+    // MARK: - SparkleUpdatePresenter
 
-        var request = URLRequest(
-            url: URL(
-                string: "https://api.github.com/repos/\(repository)/releases/latest"
-            )!
-        )
-        request.setValue(
-            "application/vnd.github+json",
-            forHTTPHeaderField: "Accept"
-        )
-        request.setValue(
-            "Unhog/\(currentVersion.displayString)",
-            forHTTPHeaderField: "User-Agent"
-        )
-
-        let (data, response) = try await session.data(for: request)
-        guard let httpResponse = response as? HTTPURLResponse,
-            (200..<300).contains(httpResponse.statusCode)
-        else {
-            throw ReleaseUpdateError.invalidResponse
-        }
-
-        let release = try GitHubReleaseParser.parse(data)
-        return try checker.compare(
-            currentVersion: currentVersion,
-            release: release
-        )
+    func updateCheckBegan() {
+        state = .checking
     }
 
-    private func apply(
-        _ comparison: ReleaseUpdateComparison,
-        showUpToDateAlert: Bool,
-        showUpdateAlert: Bool
+    func updateFound(
+        version: String,
+        choice: @escaping (SPUUserUpdateChoice) -> Void
     ) {
-        switch comparison {
-        case .upToDate:
-            pendingUpdate = nil
-            state = .upToDate
-            if showUpToDateAlert {
-                presentAlert(
-                    title: "You're up to date",
-                    message: "Unhog \(currentVersionLabel) is the latest release."
-                )
-            }
-        case let .updateAvailable(update):
-            pendingUpdate = update
-            state = .updateAvailable(update)
-            if showUpdateAlert {
-                presentUpdateAlert(update)
-            }
-        }
+        pendingChoice = choice
+        pendingVersion = version
+        state = .available(version: version)
     }
 
-    private func downloadAsset(
-        from url: URL,
-        checksumURL: URL?,
-        suggestedName: String
-    ) async throws -> URL {
-        let (temporaryURL, response) = try await session.download(from: url)
-        guard let httpResponse = response as? HTTPURLResponse,
-            (200..<300).contains(httpResponse.statusCode)
-        else {
-            throw ReleaseUpdateError.invalidResponse
-        }
-
-        if let checksumURL {
-            try await verify(fileAt: temporaryURL, against: checksumURL)
-        }
-
-        guard let downloads = downloadsDirectory() else {
-            throw ReleaseUpdateError.downloadsDirectoryUnavailable
-        }
-        let destination = downloads.appending(path: suggestedName)
-
-        if FileManager.default.fileExists(atPath: destination.path) {
-            try FileManager.default.removeItem(at: destination)
-        }
-
-        try FileManager.default.moveItem(at: temporaryURL, to: destination)
-        return destination
+    func updateNotFound() {
+        pendingChoice = nil
+        pendingVersion = nil
+        state = .upToDate
     }
 
-    private func verify(fileAt url: URL, against checksumURL: URL) async throws {
-        let (data, response) = try await session.data(from: checksumURL)
-        guard let httpResponse = response as? HTTPURLResponse,
-            (200..<300).contains(httpResponse.statusCode),
-            let text = String(data: data, encoding: .utf8),
-            let expected = ReleaseChecksum.parseSHA256(text)
-        else {
-            throw ReleaseUpdateError.invalidResponse
-        }
-
-        guard try sha256Hex(ofFileAt: url) == expected else {
-            throw ReleaseUpdateError.checksumMismatch
-        }
+    func updateFailed(_ message: String) {
+        pendingChoice = nil
+        state = .failed(message)
     }
 
-    private func sha256Hex(ofFileAt url: URL) throws -> String {
-        let handle = try FileHandle(forReadingFrom: url)
-        defer { try? handle.close() }
-
-        // Read in chunks so a large disk image never sits in memory whole.
-        var hasher = SHA256()
-        while let chunk = try handle.read(upToCount: 1 << 20), !chunk.isEmpty {
-            hasher.update(data: chunk)
-        }
-        return hasher.finalize()
-            .map { String(format: "%02x", $0) }
-            .joined()
+    func downloadBegan() {
+        state = .downloading(fraction: nil)
     }
 
-    private func presentUpdateAlert(_ update: ReleaseUpdate) {
-        let alert = NSAlert()
-        alert.messageText = "Update available"
-        alert.informativeText =
-            "Unhog \(update.version.displayString) is ready to download."
-        alert.addButton(withTitle: "Download")
-        alert.addButton(withTitle: "Release notes")
-        alert.addButton(withTitle: "Not now")
-
-        switch alert.runModal() {
-        case .alertFirstButtonReturn:
-            Task { await downloadUpdate() }
-        case .alertSecondButtonReturn:
-            NSWorkspace.shared.open(update.pageURL)
-        default:
-            break
-        }
+    func downloadProgressed(fraction: Double?) {
+        state = .downloading(fraction: fraction)
     }
 
-    private func presentAlert(title: String, message: String) {
-        let alert = NSAlert()
-        alert.messageText = title
-        alert.informativeText = message
-        alert.addButton(withTitle: "OK")
-        alert.runModal()
+    func installationBegan() {
+        state = .installing
+    }
+
+    func readyToRelaunch(choice: @escaping (SPUUserUpdateChoice) -> Void) {
+        pendingChoice = choice
+        state = .readyToRelaunch
+    }
+
+    func installationFinished() {
+        pendingChoice = nil
+        state = .idle
+    }
+
+    func sessionEnded() {
+        pendingChoice = nil
+        // A dismissed session should leave no trace in the popover; anything
+        // still on screen would describe an update nobody is working on.
+        if case .failed = state { return }
+        state = .idle
+    }
+
+    func automaticChecksAllowed() -> Bool {
+        automaticChecks
+    }
+
+    // MARK: - Previews
+
+    func applyPreviewState(_ state: State) {
+        if case let .available(version) = state {
+            pendingVersion = version
+        }
+        self.state = state
     }
 }

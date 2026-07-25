@@ -27,9 +27,16 @@ struct UpdateBanner: View {
 
             Spacer(minLength: 4)
 
-            if presentation.showsProgress {
+            switch presentation.progress {
+            case let .fraction(value):
+                ProgressView(value: value)
+                    .progressViewStyle(.linear)
+                    .frame(width: 64)
+            case .indeterminate:
                 ProgressView()
                     .controlSize(.small)
+            case nil:
+                EmptyView()
             }
 
             if presentation.showsReleaseNotes {

@@ -32,5 +32,13 @@
 	<string>Copyright © 2026 Alex</string>
 	<key>NSPrincipalClass</key>
 	<string>NSApplication</string>
+	<key>SUEnableDownloaderService</key>
+	<false/>
+	<key>SUEnableInstallerLauncherService</key>
+	<false/>
+	<key>SUFeedURL</key>
+	<string>https://flazouh.github.io/unhog/appcast.xml</string>
+	<key>SUPublicEDKey</key>
+	<string>2jw75mPPTB506ntMBmLmJ33LXuFRdnbxXBi+xOpO5Rc=</string>
 </dict>
 </plist>

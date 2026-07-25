@@ -63,20 +63,26 @@ struct GeneralSettingsPane: View {
             )
             Toggle(
                 "Check for updates automatically",
-                isOn: preferenceBinding(
-                    store,
-                    \.general.automaticallyCheckForUpdates
+                // Written straight through to the updater as well as the stored
+                // preference, so turning it off stops the next scheduled check
+                // rather than the one after a relaunch.
+                isOn: Binding(
+                    get: {
+                        store.preferences.general.automaticallyCheckForUpdates
+                    },
+                    set: { enabled in
+                        store.updatePreferences {
+                            $0.general.automaticallyCheckForUpdates = enabled
+                        }
+                        updateController.setAutomaticChecks(enabled)
+                    }
                 )
             )
             HStack {
                 Button("Check for Updates…") {
-                    Task {
-                        await updateController.checkForUpdates(
-                            showUpToDateAlert: false,
-                            showUpdateAlert: false
-                        )
-                    }
+                    updateController.checkForUpdates()
                 }
+                .disabled(!updateController.canCheckForUpdates)
                 if updateController.state == .checking {
                     ProgressView()
                         .controlSize(.small)
@@ -93,38 +99,35 @@ struct GeneralSettingsPane: View {
             EmptyView()
         case .upToDate:
             SettingDescription("You're on the latest release.")
-        case let .updateAvailable(update):
-            SettingDescription(
-                "Unhog \(update.version.displayString) is available."
-            )
+        case let .available(version):
+            SettingDescription("Unhog \(version) is available.")
             HStack {
-                Button("Download update") {
-                    Task {
-                        await updateController.downloadUpdate()
-                    }
+                Button("Install and restart") {
+                    updateController.installUpdate()
                 }
                 Button("View release notes") {
                     updateController.openReleasePage()
                 }
             }
         case .downloading:
-            SettingDescription("Downloading the latest installer…")
-        case let .readyToInstall(url):
-            SettingDescription(
-                "Installer saved to \(url.lastPathComponent)."
-            )
-            Button("Open installer") {
-                updateController.openDownloadedUpdate()
+            SettingDescription("Downloading the update…")
+        case .installing:
+            SettingDescription("Installing the update…")
+        case .readyToRelaunch:
+            SettingDescription("The update is ready.")
+            Button("Restart Unhog") {
+                updateController.installUpdate()
             }
         case let .failed(message):
             SettingDescription(message)
-        case let .downloadFailed(message):
-            SettingDescription(message)
             Button("Try again") {
-                Task {
-                    await updateController.downloadUpdate()
-                }
+                updateController.checkForUpdates()
             }
+        case .unavailable:
+            SettingDescription(
+                "Automatic updates need a signed copy of Unhog from a release "
+                    + "build, so they are off in this one."
+            )
         }
     }
 }
