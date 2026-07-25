@@ -1,13 +1,18 @@
 import SwiftUI
 import UnhogCore
 
-/// Shown when the machine as a whole is short on memory. There is no process to
-/// blame and no button that fixes it, so the banner's job is to explain rather
-/// than to offer an action: without it the app silently reports "all clear"
-/// while the Mac is unusable.
+/// Shown when the machine as a whole is short on memory.
+///
+/// No single process is over its limit, which is why the workload rules stay
+/// silent, but "it is the total of everything running" is not something a user
+/// can act on. The largest holders are named and offered up for quitting: that
+/// is the one move available, and finding it is the entire point of the app.
 struct SystemPressureBanner: View {
     let pressure: SystemPressure
     let hasWorkloadIncidents: Bool
+    /// Largest memory holders, biggest first. Empty before the first sample.
+    var topGroups: [ProcessGroup] = []
+    var onQuit: ((ProcessGroupID) -> Void)?
 
     var body: some View {
         HStack(alignment: .top, spacing: 9) {
@@ -27,17 +32,22 @@ struct SystemPressureBanner: View {
                     .fixedSize(horizontal: false, vertical: true)
 
                 if !hasWorkloadIncidents {
-                    Text(
-                        "No single app is over its limit — it is the total of "
-                            + "everything running."
-                    )
-                    .font(.system(size: 9))
-                    .foregroundStyle(.tertiary)
-                    .fixedSize(horizontal: false, vertical: true)
+                    Text(holdersLine)
+                        .font(.system(size: 9))
+                        .foregroundStyle(.tertiary)
+                        .fixedSize(horizontal: false, vertical: true)
                 }
             }
 
             Spacer(minLength: 0)
+
+            if let largest = topGroups.first, let onQuit {
+                Button("Quit \(largest.displayName)") {
+                    onQuit(largest.id)
+                }
+                .buttonStyle(InlineActionStyle(tone: tint, compact: true))
+                .padding(.top, 1)
+            }
         }
         .padding(.horizontal, 11)
         .padding(.vertical, 9)
@@ -57,6 +67,19 @@ struct SystemPressureBanner: View {
         )
         .accessibilityElement(children: .combine)
         .accessibilityLabel("\(pressure.summary) \(pressure.detail)")
+    }
+
+    /// Naming the holders turns an observation into somewhere to start. With no
+    /// sample yet there is nothing to name, so the original explanation stands.
+    private var holdersLine: String {
+        guard !topGroups.isEmpty else {
+            return "No single app is over its limit — it is the total of "
+                + "everything running."
+        }
+        let named = topGroups.prefix(3)
+            .map { "\($0.displayName) \(MetricFormatting.memory($0.memoryBytes))" }
+            .joined(separator: " · ")
+        return "Holding the most: \(named)."
     }
 
     private var tint: Color {

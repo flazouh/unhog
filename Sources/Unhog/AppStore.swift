@@ -16,6 +16,9 @@ final class AppStore: ObservableObject {
     @Published private(set) var groups: [ProcessGroup] = []
     @Published private(set) var incidents: [ResourceIncident] = []
     @Published private(set) var systemPressure: SystemPressure?
+    /// Kept beside the pressure verdict so the memory map can report real
+    /// headroom even when there is no incident worth raising.
+    @Published private(set) var systemMemory: SystemMemoryReading?
     @Published private(set) var isPreparing = true
     @Published private(set) var stopState: StopState = .idle
     @Published private(set) var recoveryAssessment: RecoveryAssessment?
@@ -138,6 +141,15 @@ final class AppStore: ObservableObject {
         )
     }
 
+    /// The apps worth quitting first when the machine as a whole is out of room.
+    func largestMemoryHolders(limit: Int) -> [ProcessGroup] {
+        Array(
+            latestGroups
+                .sorted { $0.memoryBytes > $1.memoryBytes }
+                .prefix(max(0, limit))
+        )
+    }
+
     func ramShare(for group: ProcessGroup) -> Double {
         guard installedMemoryBytes > 0 else { return 0 }
         return min(
@@ -229,8 +241,10 @@ final class AppStore: ObservableObject {
         recoveryAssessment: RecoveryAssessment? = nil,
         resolvingGroup: ProcessGroup? = nil,
         stopState: StopState = .idle,
-        systemPressure: SystemPressure? = nil
+        systemPressure: SystemPressure? = nil,
+        systemMemory: SystemMemoryReading? = nil
     ) {
+        self.systemMemory = systemMemory
         monitoringTask?.cancel()
         monitoringTask = nil
         sampleCount = 2
@@ -679,6 +693,7 @@ final class AppStore: ObservableObject {
         // Whole-machine exhaustion has no owning process, so it is tracked
         // beside the per-workload incidents rather than among them.
         if let reading = systemMemorySampler.sample(at: Date()) {
+            systemMemory = reading
             systemPressure = systemPressureDetector.evaluate(reading)
         }
         let alertsAllowed =

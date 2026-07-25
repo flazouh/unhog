@@ -10,6 +10,12 @@ import Foundation
 public struct SystemMemoryReading: Hashable, Sendable {
     public let installedBytes: UInt64
     public let freeBytes: UInt64
+    /// What a new allocation could actually have without anything being swapped:
+    /// free pages plus the inactive and purgeable ones the kernel would reclaim
+    /// on demand. Free pages alone are near zero on any Mac that has been awake a
+    /// while, because unused memory is filled with cache on purpose, so reporting
+    /// them as the headroom figure reads as an emergency during normal use.
+    public let availableBytes: UInt64
     public let compressedBytes: UInt64
     public let swapUsedBytes: UInt64
     public let swapTotalBytes: UInt64
@@ -19,6 +25,7 @@ public struct SystemMemoryReading: Hashable, Sendable {
     public init(
         installedBytes: UInt64,
         freeBytes: UInt64,
+        availableBytes: UInt64? = nil,
         compressedBytes: UInt64,
         swapUsedBytes: UInt64,
         swapTotalBytes: UInt64,
@@ -27,6 +34,7 @@ public struct SystemMemoryReading: Hashable, Sendable {
     ) {
         self.installedBytes = installedBytes
         self.freeBytes = freeBytes
+        self.availableBytes = max(availableBytes ?? freeBytes, freeBytes)
         self.compressedBytes = compressedBytes
         self.swapUsedBytes = swapUsedBytes
         self.swapTotalBytes = swapTotalBytes
@@ -66,7 +74,15 @@ public struct SystemPressureThresholds: Hashable, Sendable {
     public var criticalSwapShare: Double
     public var elevatedCompressedShare: Double
     public var criticalCompressedShare: Double
+    /// The rate at which paging is the reason the machine feels slow.
+    ///
+    /// This was once set to 1, which is indistinguishable from idle: macOS pages
+    /// out a handful of pages a second as ordinary housekeeping, so the alert
+    /// fired on a Mac with half its RAM free and reported it as swapping
+    /// constantly. A Mac genuinely thrashing pages out in the thousands.
     public var activePageOutsPerSecond: Double
+    /// Enough paging to be worth naming, but not enough to blame.
+    public var noticeablePageOutsPerSecond: Double
     public var sustainedFor: TimeInterval
 
     public init(
@@ -74,7 +90,8 @@ public struct SystemPressureThresholds: Hashable, Sendable {
         criticalSwapShare: Double = 0.25,
         elevatedCompressedShare: Double = 0.15,
         criticalCompressedShare: Double = 0.30,
-        activePageOutsPerSecond: Double = 1,
+        activePageOutsPerSecond: Double = 100,
+        noticeablePageOutsPerSecond: Double = 10,
         sustainedFor: TimeInterval = 20
     ) {
         self.elevatedSwapShare = elevatedSwapShare
@@ -82,6 +99,7 @@ public struct SystemPressureThresholds: Hashable, Sendable {
         self.elevatedCompressedShare = elevatedCompressedShare
         self.criticalCompressedShare = criticalCompressedShare
         self.activePageOutsPerSecond = activePageOutsPerSecond
+        self.noticeablePageOutsPerSecond = noticeablePageOutsPerSecond
         self.sustainedFor = sustainedFor
     }
 }
@@ -157,7 +175,7 @@ public struct SystemPressureDetector: Sendable {
             pageOutsPerSecond: rate,
             beganAt: beganAt,
             duration: duration,
-            summary: summary(for: level),
+            summary: summary(for: level, pageOutsPerSecond: rate),
             detail: detail(for: reading, pageOutsPerSecond: rate)
         )
     }
@@ -198,12 +216,21 @@ public struct SystemPressureDetector: Sendable {
         return deep || shallow ? .elevated : .normal
     }
 
-    private func summary(for level: SystemPressureLevel) -> String {
+    /// Depth without activity is history, and has to read like it. Swap left
+    /// over from a build that finished an hour ago says nothing about how the
+    /// machine feels now, and describing it in the present tense contradicts the
+    /// free memory the user can see for themselves.
+    private func summary(
+        for level: SystemPressureLevel,
+        pageOutsPerSecond rate: Double
+    ) -> String {
         switch level {
         case .critical:
             "Your Mac is out of memory and swapping constantly."
-        case .elevated:
+        case .elevated where rate >= thresholds.noticeablePageOutsPerSecond:
             "Your Mac is low on memory."
+        case .elevated:
+            "Your Mac ran low on memory earlier."
         case .normal:
             ""
         }
@@ -220,7 +247,7 @@ public struct SystemPressureDetector: Sendable {
             "\(formatter.string(fromByteCount: Int64(clamping: reading.swapUsedBytes))) swap",
             "\(formatter.string(fromByteCount: Int64(clamping: reading.compressedBytes))) compressed",
         ]
-        if rate >= thresholds.activePageOutsPerSecond {
+        if rate >= thresholds.noticeablePageOutsPerSecond {
             parts.append("\(Int(rate.rounded())) page-outs per second")
         }
         return parts.joined(separator: ", ") + "."

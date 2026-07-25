@@ -45,7 +45,11 @@ struct PopoverView: View {
             if let pressure = store.systemPressure {
                 SystemPressureBanner(
                     pressure: pressure,
-                    hasWorkloadIncidents: !store.incidents.isEmpty
+                    hasWorkloadIncidents: !store.incidents.isEmpty,
+                    topGroups: store.largestMemoryHolders(limit: 3),
+                    // Routed through the same confirmation the rows use, so a
+                    // banner cannot quit anything on a single stray click.
+                    onQuit: { store.requestQuit($0) }
                 )
                 .padding(.horizontal, UnhogTheme.pagePadding)
                 .padding(.bottom, 10)
@@ -318,6 +322,12 @@ struct PopoverView: View {
                 return "\(remaining.count) still running"
             }
         }
+        // A red banner under the words "All clear" asks the user to decide which
+        // of the two the app means. The machine running out of room counts as
+        // something being wrong, even with no single workload to blame.
+        if store.incidents.isEmpty, let pressure = store.systemPressure {
+            return pressure.level == .critical ? "Memory critical" : "Memory low"
+        }
         if store.incidents.isEmpty {
             return "All clear"
         }
@@ -338,7 +348,12 @@ struct PopoverView: View {
             return UnhogTheme.warningForeground
         }
         guard let incident = store.activeIncident else {
-            return UnhogTheme.healthyForeground
+            guard let pressure = store.systemPressure else {
+                return UnhogTheme.healthyForeground
+            }
+            return pressure.level == .critical
+                ? UnhogTheme.destructive
+                : UnhogTheme.warningForeground
         }
         return UnhogTheme.severityForeground(
             for: incident.severity

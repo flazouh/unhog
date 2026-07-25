@@ -170,12 +170,66 @@ struct SystemPressureTests {
         #expect(pressure?.detail.contains("swap") == true)
     }
 
+    @Test("A trickle of page-outs is not a machine in trouble")
+    func trickleIsNotCritical() {
+        // Measured while the popover claimed the Mac was "out of memory and
+        // swapping constantly": half the RAM was free and the kernel reported
+        // normal pressure. Two page-outs a second is indistinguishable from
+        // idle, and calling that constant swapping is how an alert gets ignored.
+        var detector = SystemPressureDetector()
+        let start = Date()
+        let observed = SystemMemoryReading(
+            installedBytes: installed,
+            freeBytes: 12 * gigabyte,
+            compressedBytes: 7_800 * 1_048_576,
+            swapUsedBytes: 4_962 * 1_048_576,
+            swapTotalBytes: 6_144 * 1_048_576,
+            cumulativePageOuts: 851_678,
+            takenAt: start
+        )
+
+        _ = detector.evaluate(observed)
+        let pressure = detector.evaluate(
+            SystemMemoryReading(
+                installedBytes: observed.installedBytes,
+                freeBytes: observed.freeBytes,
+                compressedBytes: observed.compressedBytes,
+                swapUsedBytes: observed.swapUsedBytes,
+                swapTotalBytes: observed.swapTotalBytes,
+                cumulativePageOuts: observed.cumulativePageOuts + 60,
+                takenAt: start.addingTimeInterval(30)
+            )
+        )
+
+        #expect(pressure?.level == .elevated)
+    }
+
+    @Test("Leftover swap is described as past tense, not a crisis")
+    func idleDepthReadsAsHistory() throws {
+        var detector = SystemPressureDetector()
+        let start = Date()
+
+        _ = detector.evaluate(reading(at: start, swap: 10 * gigabyte))
+        let observed = detector.evaluate(
+            reading(at: start.addingTimeInterval(30), swap: 10 * gigabyte)
+        )
+        let pressure = try #require(observed)
+
+        // Nothing is being paged right now, so the machine does not feel slow;
+        // saying it is low on memory would contradict what the user can see.
+        #expect(pressure.summary.contains("earlier"))
+    }
+
     @Test("Sampling the real machine returns plausible statistics")
     func samplerReadsTheMachine() throws {
         let reading = try #require(SystemMemorySampler().sample(at: Date()))
 
         #expect(reading.installedBytes > 0)
         #expect(reading.freeBytes <= reading.installedBytes)
+        // Free pages sit near zero on any Mac in use, so headroom has to count
+        // the reclaimable ones too or the display reads as an emergency.
+        #expect(reading.availableBytes >= reading.freeBytes)
+        #expect(reading.availableBytes <= reading.installedBytes)
         #expect(reading.compressedBytes <= reading.installedBytes)
         #expect(reading.swapUsedBytes <= reading.swapTotalBytes)
         // A page count multiplied by a wrong page size shows up here as a
