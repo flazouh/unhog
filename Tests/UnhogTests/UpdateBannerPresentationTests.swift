@@ -7,12 +7,24 @@ import Testing
 struct UpdateBannerPresentationTests {
     @Test("States with nothing to act on show no banner")
     func quietStates() {
-        // A daily background check that finds nothing must leave the popover
-        // exactly as the user left it.
+        // A background check that finds nothing lands on `.idle`, so the popover
+        // is left exactly as the user found it.
         #expect(UpdateBannerPresentation.make(for: .idle) == nil)
-        #expect(UpdateBannerPresentation.make(for: .checking) == nil)
-        #expect(UpdateBannerPresentation.make(for: .upToDate) == nil)
         #expect(UpdateBannerPresentation.make(for: .unavailable) == nil)
+    }
+
+    @Test("A check the user asked for reports back either way")
+    func answersAnExplicitCheck() throws {
+        // Silence in response to a button press reads as a broken button, so
+        // both the wait and the "nothing new" answer are shown.
+        let checking = try #require(UpdateBannerPresentation.make(for: .checking))
+        #expect(checking.progress == .indeterminate)
+        #expect(checking.primary == nil)
+
+        let upToDate = try #require(UpdateBannerPresentation.make(for: .upToDate))
+        #expect(upToDate.title == "Unhog is up to date")
+        #expect(upToDate.primary == nil)
+        #expect(!upToDate.isWarning)
     }
 
     @Test("An available update names the version and offers the notes")
