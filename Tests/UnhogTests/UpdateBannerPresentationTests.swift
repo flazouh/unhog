@@ -1,86 +1,83 @@
-import Foundation
 import Testing
-import UnhogCore
 
 @testable import Unhog
 
 @Suite("Update banner")
 @MainActor
 struct UpdateBannerPresentationTests {
-    private let update = ReleaseUpdate(
-        version: AppVersion(major: 0, minor: 1, patch: 5),
-        title: "Unhog 0.1.5",
-        releaseNotes: "Reports whole-machine memory pressure.",
-        pageURL: URL(string: "https://example.com/release")!,
-        downloadURL: URL(string: "https://example.com/Unhog-0.1.5.dmg")!
-    )
-
-    @Test("States with nothing to offer show no banner")
+    @Test("States with nothing to act on show no banner")
     func quietStates() {
+        // A daily background check that finds nothing must leave the popover
+        // exactly as the user left it.
         #expect(UpdateBannerPresentation.make(for: .idle) == nil)
         #expect(UpdateBannerPresentation.make(for: .checking) == nil)
         #expect(UpdateBannerPresentation.make(for: .upToDate) == nil)
+        #expect(UpdateBannerPresentation.make(for: .unavailable) == nil)
     }
 
     @Test("An available update names the version and offers the notes")
     func availableUpdate() throws {
         let banner = try #require(
-            UpdateBannerPresentation.make(for: .updateAvailable(update))
+            UpdateBannerPresentation.make(for: .available(version: "0.1.7"))
         )
 
-        #expect(banner.title.contains("0.1.5"))
-        #expect(banner.primary == .init(label: "Update", kind: .download))
+        #expect(banner.title.contains("0.1.7"))
+        #expect(banner.primary?.label == "Update")
+        #expect(banner.primary?.kind == .install)
         #expect(banner.showsReleaseNotes)
-        #expect(!banner.showsProgress)
+        #expect(banner.progress == nil)
         #expect(!banner.isWarning)
     }
 
-    @Test("A download in progress replaces the button with progress")
-    func downloading() throws {
+    @Test("A download with a known size shows how far along it is")
+    func measuredDownload() throws {
         let banner = try #require(
-            UpdateBannerPresentation.make(for: .downloading)
+            UpdateBannerPresentation.make(for: .downloading(fraction: 0.25))
         )
 
-        #expect(banner.showsProgress)
-        // Nothing to press: pressing again would start a second download.
+        #expect(banner.progress == .fraction(0.25))
+        // Nothing to press while bytes are arriving.
         #expect(banner.primary == nil)
     }
 
-    @Test("A verified download offers to open the installer")
-    func readyToInstall() throws {
+    @Test("A download of unknown size spins rather than guessing")
+    func unmeasuredDownload() throws {
         let banner = try #require(
-            UpdateBannerPresentation.make(
-                for: .readyToInstall(
-                    URL(fileURLWithPath: "/tmp/Unhog-0.1.5.dmg")
-                )
-            )
+            UpdateBannerPresentation.make(for: .downloading(fraction: nil))
         )
 
-        #expect(banner.primary?.kind == .openInstaller)
-        #expect(banner.primary?.label == "Open Installer")
-        #expect(banner.detail?.contains("Unhog-0.1.5.dmg") == true)
-        #expect(!banner.showsProgress)
+        #expect(banner.progress == .indeterminate)
     }
 
-    @Test("A failed background check stays out of the way")
-    func failedCheckIsQuiet() {
-        // The daily check runs unprompted, so a network blip must not leave a
-        // banner sitting in the popover until the next launch.
-        #expect(UpdateBannerPresentation.make(for: .failed("offline")) == nil)
+    @Test("Installing says the restart is coming")
+    func installing() throws {
+        let banner = try #require(UpdateBannerPresentation.make(for: .installing))
+
+        #expect(banner.progress == .indeterminate)
+        #expect(banner.primary == nil)
+        #expect(banner.detail?.contains("restart") == true)
     }
 
-    @Test("A failed download is surfaced with a retry")
-    func failedDownloadIsShown() throws {
+    @Test("A staged update offers the restart that finishes it")
+    func readyToRelaunch() throws {
         let banner = try #require(
-            UpdateBannerPresentation.make(
-                for: .downloadFailed("The download did not match the checksum.")
-            )
+            UpdateBannerPresentation.make(for: .readyToRelaunch)
         )
 
-        // This one followed a button press, and a checksum failure is worth
-        // saying out loud.
+        #expect(banner.primary?.label == "Restart")
+        // The same reply channel as "Update": Sparkle is waiting on one answer.
+        #expect(banner.primary?.kind == .install)
+        #expect(banner.progress == nil)
+    }
+
+    @Test("A failure is surfaced with its reason and a retry")
+    func failure() throws {
+        let banner = try #require(
+            UpdateBannerPresentation.make(for: .failed("The signature did not match."))
+        )
+
         #expect(banner.isWarning)
-        #expect(banner.primary == .init(label: "Try Again", kind: .download))
-        #expect(banner.detail == "The download did not match the checksum.")
+        #expect(banner.detail == "The signature did not match.")
+        #expect(banner.primary?.kind == .retry)
     }
 }

@@ -25,10 +25,10 @@ struct PopoverView: View {
                     presentation: update,
                     onPrimaryAction: { kind in
                         switch kind {
-                        case .download:
-                            Task { await updateController.downloadUpdate() }
-                        case .openInstaller:
-                            updateController.openDownloadedUpdate()
+                        case .install:
+                            updateController.installUpdate()
+                        case .retry:
+                            updateController.checkForUpdates()
                         }
                     },
                     onReleaseNotes: {

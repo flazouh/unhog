@@ -93,33 +93,21 @@ enum PreviewSupport {
                 groups: [cursor, spotify],
                 incidents: []
             )
-            updateController?.applyPreviewState(
-                .updateAvailable(
-                    ReleaseUpdate(
-                        version: AppVersion(major: 0, minor: 1, patch: 5),
-                        title: "Unhog 0.1.5",
-                        releaseNotes: "Reports whole-machine memory pressure.",
-                        pageURL: URL(
-                            string:
-                                "https://github.com/flazouh/unhog/releases/tag/v0.1.5"
-                        )!,
-                        downloadURL: URL(
-                            string: "https://example.com/Unhog-0.1.5.dmg"
-                        )!
-                    )
-                )
+            updateController?.applyPreviewState(.available(version: "0.1.7"))
+
+        case "update-downloading":
+            store.applyPreviewFixture(
+                groups: [cursor, spotify],
+                incidents: []
             )
+            updateController?.applyPreviewState(.downloading(fraction: 0.42))
 
         case "update-ready":
             store.applyPreviewFixture(
                 groups: [cursor, spotify],
                 incidents: []
             )
-            updateController?.applyPreviewState(
-                .readyToInstall(
-                    URL(fileURLWithPath: "/Users/example/Downloads/Unhog-0.1.5.dmg")
-                )
-            )
+            updateController?.applyPreviewState(.readyToRelaunch)
 
         case "pressure":
             // The machine is exhausted but no single workload is to blame, so

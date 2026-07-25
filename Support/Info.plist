@@ -19,9 +19,9 @@
 	<key>CFBundlePackageType</key>
 	<string>APPL</string>
 	<key>CFBundleShortVersionString</key>
-	<string>0.1.5</string>
+	<string>0.1.6</string>
 	<key>CFBundleVersion</key>
-	<string>6</string>
+	<string>7</string>
 	<key>LSMinimumSystemVersion</key>
 	<string>14.0</string>
 	<key>LSUIElement</key>
@@ -32,5 +32,13 @@
 	<string>Copyright © 2026 Alex</string>
 	<key>NSPrincipalClass</key>
 	<string>NSApplication</string>
+	<key>SUEnableDownloaderService</key>
+	<false/>
+	<key>SUEnableInstallerLauncherService</key>
+	<false/>
+	<key>SUFeedURL</key>
+	<string>https://flazouh.github.io/unhog/appcast.xml</string>
+	<key>SUPublicEDKey</key>
+	<string>2jw75mPPTB506ntMBmLmJ33LXuFRdnbxXBi+xOpO5Rc=</string>
 </dict>
 </plist>

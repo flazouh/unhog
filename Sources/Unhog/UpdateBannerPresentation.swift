@@ -1,28 +1,30 @@
 import Foundation
 
-/// What, if anything, the popover should say about an update.
-///
-/// Kept apart from the view so the decision of when to stay silent is testable.
-/// The important silence is a failed automatic check: that runs unprompted once
-/// a day, so a network blip must not leave a warning sitting in the popover.
 struct UpdateBannerPresentation: Equatable {
-    /// The label and the effect travel together, because the same button reads
-    /// "Update", "Open Installer" or "Try Again" depending on how far the
-    /// update has got.
     struct PrimaryAction: Equatable {
         enum Kind: Equatable {
-            case download
-            case openInstaller
+            /// Answers whichever question the updater is waiting on: begin the
+            /// install, or restart into an update already staged on disk.
+            case install
+            case retry
         }
 
         let label: String
         let kind: Kind
     }
 
+    /// Work in flight, and whether its end is known.
+    enum Progress: Equatable {
+        /// The server did not say how large the download is, so a bar would be
+        /// inventing a position it cannot know.
+        case indeterminate
+        case fraction(Double)
+    }
+
     let title: String
     let detail: String?
     let primary: PrimaryAction?
-    let showsProgress: Bool
+    let progress: Progress?
     let showsReleaseNotes: Bool
     let isWarning: Bool
 
@@ -31,52 +33,57 @@ struct UpdateBannerPresentation: Equatable {
         for state: UpdateController.State
     ) -> UpdateBannerPresentation? {
         switch state {
-        case .idle, .checking, .upToDate:
+        case .idle, .checking, .upToDate, .unavailable:
+            // Nothing to act on, and a menu bar app has no business reporting a
+            // check that found the version the user already has.
             return nil
 
-        case let .updateAvailable(update):
+        case let .available(version):
             return UpdateBannerPresentation(
-                title: "Unhog \(update.version.displayString) is available",
-                detail: nil,
-                primary: PrimaryAction(label: "Update", kind: .download),
-                showsProgress: false,
+                title: "Unhog \(version) is available",
+                detail: "Installs and restarts Unhog for you.",
+                primary: PrimaryAction(label: "Update", kind: .install),
+                progress: nil,
                 showsReleaseNotes: true,
                 isWarning: false
             )
 
-        case .downloading:
+        case let .downloading(fraction):
             return UpdateBannerPresentation(
                 title: "Downloading update…",
-                detail: "Verifying the checksum published with the release.",
+                detail: nil,
                 primary: nil,
-                showsProgress: true,
+                progress: fraction.map(Progress.fraction) ?? .indeterminate,
                 showsReleaseNotes: false,
                 isWarning: false
             )
 
-        case let .readyToInstall(url):
+        case .installing:
             return UpdateBannerPresentation(
-                title: "Update ready to install",
-                detail: "Saved to \(url.lastPathComponent).",
-                primary: PrimaryAction(
-                    label: "Open Installer",
-                    kind: .openInstaller
-                ),
-                showsProgress: false,
+                title: "Installing update…",
+                detail: "Unhog will restart when it is done.",
+                primary: nil,
+                progress: .indeterminate,
                 showsReleaseNotes: false,
                 isWarning: false
             )
 
-        case .failed:
-            // A check nobody asked for: reported in Settings, silent here.
-            return nil
-
-        case let .downloadFailed(message):
+        case .readyToRelaunch:
             return UpdateBannerPresentation(
-                title: "Update could not be installed",
+                title: "Update ready",
+                detail: "Restart Unhog to finish installing it.",
+                primary: PrimaryAction(label: "Restart", kind: .install),
+                progress: nil,
+                showsReleaseNotes: false,
+                isWarning: false
+            )
+
+        case let .failed(message):
+            return UpdateBannerPresentation(
+                title: "Update failed",
                 detail: message,
-                primary: PrimaryAction(label: "Try Again", kind: .download),
-                showsProgress: false,
+                primary: PrimaryAction(label: "Try Again", kind: .retry),
+                progress: nil,
                 showsReleaseNotes: false,
                 isWarning: true
             )
