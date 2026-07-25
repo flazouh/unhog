@@ -1,6 +1,6 @@
 # 007 — Replace the native Controls popover
 
-- **Status**: REVERTED
+- **Status**: DONE
 - **Commit**: eb27882
 - **Severity**: HIGH
 - **Category**: Physicality & origin

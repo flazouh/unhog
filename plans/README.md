@@ -2,13 +2,13 @@
 
 | Plan | Title | Severity | Status |
 | --- | --- | --- | --- |
-| 001 | Build the visual drain signature | HIGH | TODO |
+| 001 | Build the visual drain signature | HIGH | DONE |
 | 002 | Animate verified state changes | HIGH | TODO |
-| 003 | Unify motion and Reduce Motion behavior | MEDIUM | TODO |
-| 004 | Add branch-scoped stopping | HIGH | TODO |
+| 003 | Unify motion and Reduce Motion behavior | MEDIUM | DONE |
+| 004 | Add branch-scoped stopping | HIGH | DONE |
 | 005 | Redesign the menu bar signal | HIGH | DONE |
 | 006 | Build the preferences system | HIGH | DONE |
-| 007 | Replace the native Controls popover | HIGH | REVERTED |
+| 007 | Replace the native Controls popover | HIGH | DONE |
 
 ## Recommended execution order
 
