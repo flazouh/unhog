@@ -20,7 +20,7 @@ jobs:
   release:
     runs-on: macos-15
     steps:
-      - uses: actions/checkout@v5
+      - uses: actions/checkout@v7
         with:
           # The release scripts compare the built commit against origin/main, so
           # they need real history rather than a shallow clone.
